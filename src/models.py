@@ -23,3 +23,9 @@ class LLM:
     def get_chat(self):
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(model=self.model, temperature=self.temperature, api_key=self.api_key)
+    
+    
+    def send(self, messages: State) -> str:
+        chat = self.get_chat()
+        response = chat.invoke(messages)
+        return response.content if hasattr(response, "content") else response.get("content", "")

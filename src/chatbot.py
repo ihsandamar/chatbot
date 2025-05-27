@@ -1,13 +1,14 @@
 
 from typing import List, Tuple
+from src.graphs.base_graph import BaseGraph
 from src.graphs.main_graph import MainGraph
 from src.models import LLM
 
 
 class Chatbot:
-    def __init__(self, llm:LLM, config: dict = None):
+    def __init__(self, llm:LLM, graph: BaseGraph, config: dict = None):
         self.llm = llm
-        self.graph = MainGraph(llm=llm).build_graph()
+        self.graph = graph.build_graph()
         self.history = []
         self.config = config if config else {}
 

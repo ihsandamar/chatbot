@@ -1,19 +1,20 @@
 from langgraph.graph import StateGraph, START, END
+from src.graphs.base_graph import BaseGraph
 from src.models import LLM, State
 from langgraph.checkpoint.memory import MemorySaver
 
 
 
-class MainGraph:
+class MainGraph(BaseGraph):
     """
     Main Graph for the chatbot workflow.
     This graph defines the structure and flow of the chatbot interactions.
     """
-    def __init__(self, llm = LLM):
-        self.llm = llm.get_chat()
+    def __init__(self, llm: LLM):
+        super().__init__(llm=llm, state_class=State)
 
     def chatbot(self, state: State):
-        return {"messages": [self.llm.invoke(state["messages"])]}
+        return {"messages": [self.llm.send(state["messages"])]}
 
 
     def build_graph(self):

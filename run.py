@@ -2,12 +2,21 @@ import gradio as gr
 from src.chatbot import Chatbot
 from src.config import OPENAI_API_KEY
 from src.models import LLM
+from src.graphs.graph_repository import GraphRepository
 
 
 
 llm = LLM(model="gpt-3.5-turbo", temperature=0.0, api_key=OPENAI_API_KEY)
 config = {"configurable": {"thread_id": "1"}}
-chatbot = Chatbot(llm=llm, config=config)
+
+# Graph repository to manage different graph types
+graph_repo = GraphRepository(llm=llm)
+
+# Get the main graph
+main_graph = graph_repo.get("main")
+
+# Initialize the chatbot with the main graph and configuration
+chatbot = Chatbot(llm=llm, config=config, graph=main_graph)
 
 
 

@@ -1,0 +1,15 @@
+
+{
+  "dependencies": [
+      "langchain_openai",
+      "src",
+      "src/graphs",
+      "src/models"
+
+
+  ],
+  "graphs": {
+      "main_graph": "src/graphs/graph_entrypoints.py:main_graph"
+  },
+  "env": ".env"
+}
