@@ -2,14 +2,14 @@
 from typing import List, Tuple
 from src.graphs.main_graph import MainGraph
 from src.models import LLM
-from src.config import OPENAI_API_KEY
 
 
 class Chatbot:
-    def __init__(self, llm:LLM):
+    def __init__(self, llm:LLM, config: dict = None):
         self.llm = llm
         self.graph = MainGraph(llm=llm).build_graph()
         self.history = []
+        self.config = config if config else {}
 
     def response_handler(self, history: List[Tuple[str, str]], message: str) -> List[Tuple[str, str]]:
         """
@@ -33,7 +33,7 @@ class Chatbot:
 
         # State hazırla ve invoke et
         state = {"messages": messages}
-        response = self.graph.invoke(state)
+        response = self.graph.invoke(state, config=self.config)
 
         # Asistan cevabını al
         if "messages" in response and isinstance(response["messages"], list):

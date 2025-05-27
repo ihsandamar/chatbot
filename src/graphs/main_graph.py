@@ -1,5 +1,6 @@
 from langgraph.graph import StateGraph, START, END
 from src.models import LLM, State
+from langgraph.checkpoint.memory import MemorySaver
 
 
 
@@ -20,13 +21,14 @@ class MainGraph:
         Function to build the graph.
         This is useful for testing purposes.
         """
+        memory = MemorySaver()
         graph_builder = StateGraph(State)
 
         # Create the graph/workflow
         graph_builder.add_node("chatbot", self.chatbot)
         graph_builder.add_edge(START, "chatbot")
         graph_builder.add_edge("chatbot", END)
-        return graph_builder.compile()
+        return graph_builder.compile(checkpointer=memory)
 
 
 

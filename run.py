@@ -6,7 +6,8 @@ from src.models import LLM
 
 
 llm = LLM(model="gpt-3.5-turbo", temperature=0.0, api_key=OPENAI_API_KEY)
-chatbot = Chatbot(llm=llm)
+config = {"configurable": {"thread_id": "1"}}
+chatbot = Chatbot(llm=llm, config=config)
 
 
 
