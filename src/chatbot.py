@@ -6,9 +6,9 @@ from src.config import OPENAI_API_KEY
 
 
 class Chatbot:
-    def __init__(self, model="gpt-3.5-turbo", temperature=0.0, api_key=OPENAI_API_KEY):
-        self.llm = LLM(model=model, temperature=temperature, api_key=api_key)
-        self.graph = MainGraph(llm=self.llm).build_graph()
+    def __init__(self, llm:LLM):
+        self.llm = llm
+        self.graph = MainGraph(llm=llm).build_graph()
         self.history = []
 
     def response_handler(self, history: List[Tuple[str, str]], message: str) -> List[Tuple[str, str]]:

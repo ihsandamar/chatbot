@@ -1,9 +1,12 @@
 import gradio as gr
 from src.chatbot import Chatbot
 from src.config import OPENAI_API_KEY
+from src.models import LLM
 
 
-chatbot = Chatbot(model="gpt-3.5-turbo", temperature=0.0, api_key=OPENAI_API_KEY)
+
+llm = LLM(model="gpt-3.5-turbo", temperature=0.0, api_key=OPENAI_API_KEY)
+chatbot = Chatbot(llm=llm)
 
 
 
