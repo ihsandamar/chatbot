@@ -14,8 +14,7 @@ class MainGraph(BaseGraph):
         super().__init__(llm=llm, state_class=State)
 
     def chatbot(self, state: State):
-        return {"messages": [self.llm.send(state["messages"])]}
-
+        return {"messages": [self.llm.get_chat().invoke(state["messages"])]}
 
     def build_graph(self):
         """
@@ -29,7 +28,7 @@ class MainGraph(BaseGraph):
         graph_builder.add_node("chatbot", self.chatbot)
         graph_builder.add_edge(START, "chatbot")
         graph_builder.add_edge("chatbot", END)
-        return graph_builder.compile(checkpointer=memory)
+        return graph_builder.compile(name = "main_graph", checkpointer=memory)
 
 
 

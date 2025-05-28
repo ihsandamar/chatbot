@@ -6,6 +6,11 @@ from src.graphs.graph_repository import GraphRepository
 
 
 
+# TODO: Graph repository declaration will change in the future
+# [ ] FEATURE: Graph repository funcs will be defined as a static method
+# [ ] FEATURE: Graph repository will be used to manage different graph types
+# [ ] FEATURE: LLM models will be managed by the graph repository functions (setting up the LLM model, temperature, etc.)
+
 llm = LLM(model="gpt-4o-mini", temperature=0.0, api_key=OPENAI_API_KEY)
 config = {"configurable": {"thread_id": "1"}}
 
