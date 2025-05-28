@@ -14,11 +14,10 @@ class Chatbot:
 
     def response_handler(self, history: List[Tuple[str, str]], message: str) -> List[Tuple[str, str]]:
         """
-        Gradio 'chat' tipi için uygun yanıt formatı.
-        message: kullanıcıdan gelen tek mesaj
+        Response handler for Gradio 'chat' type.
+        message: single message from the user
         history: [(user_msg: str, bot_msg: str), ...]
-        
-        Geriye yine aynı formatta [(user_msg, bot_msg)] geçmişini döner.
+        Returns the history in the same format [(user_msg, bot_msg)].
         """
 
         # LangGraph'e uygun mesaj listesi oluştur

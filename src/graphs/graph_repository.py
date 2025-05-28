@@ -10,8 +10,8 @@ GraphType = Literal["main"]
 
 class GraphRepository:
     """
-    Repository Pattern: Tüm graph yapılarını merkezi olarak yönetir.
-    Her graph sınıfı BaseGraph'den türemeli ve llm ile initialize edilmelidir.
+    GraphRepository manages all graph structures centrally using the Repository Pattern.
+    Each graph class should inherit from BaseGraph and be initialized with an LLM instance.
     """
 
     def __init__(self, llm: LLM):
@@ -25,7 +25,7 @@ class GraphRepository:
 
     def get(self, graph_type: GraphType) -> BaseGraph:
         """
-        Belirtilen graph türünü üretir ve döner.
+        Produces and returns the specified graph type.
         """
         if graph_type not in self._registry:
             raise ValueError(f"Geçersiz graph tipi: {graph_type}")
@@ -33,12 +33,12 @@ class GraphRepository:
 
     def list_graphs(self):
         """
-        Desteklenen tüm graph türlerini listeler.
+        Lists all supported graph types.
         """
         return list(self._registry.keys())
 
     def register(self, graph_type: GraphType, builder: Callable[[], BaseGraph]):
         """
-        Dışarıdan yeni bir graph tipi kaydeder (test, plugin, override senaryoları için).
+        Registers a new graph type from the outside (for testing, plugin, override scenarios).
         """
         self._registry[graph_type] = builder

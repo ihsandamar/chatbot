@@ -19,19 +19,19 @@ class BaseGraph(ABC):
     @abstractmethod
     def build_graph(self):
         """
-        Her alt sınıf bu fonksiyonu override edip kendi StateGraph yapısını döndürmelidir.
+        Each subclass must override this function to return its own StateGraph structure.
         """
         pass
 
     def get_graph_builder(self) -> StateGraph:
         """
-        Graph builder (StateGraph) nesnesini sağlar.
-        Alt sınıflar gerekirse override edebilir.
+        Provides the graph builder (StateGraph) object.
+        Subclasses can override if needed.
         """
         return StateGraph(self.state_class)
 
     def get_memory(self):
         """
-        Varsayılan olarak MemorySaver kullanılır.
+        Returns the memory object used by the graph.
         """
         return self.memory

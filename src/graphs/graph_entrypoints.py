@@ -3,9 +3,15 @@ from src.models import LLM
 from src.graphs.main_graph import MainGraph
 
 
+# TODO: Add Dynamic Module Discovery and Loading  
+
 def graph(name: str) -> MainGraph:
     """
-    Belirtilen graph adını kullanarak graph nesnesi döner.
+    Returns a graph object based on the specified name.
+    
+    :param name: Name of the graph
+    :return: Graph object
+    :rtype: MainGraph
     """
     from src.config import OPENAI_API_KEY
     llm = LLM(model="gpt-3.5-turbo", temperature=0.0, api_key=OPENAI_API_KEY)
