@@ -6,7 +6,7 @@ from src.graphs.graph_repository import GraphRepository
 
 
 
-llm = LLM(model="gpt-3.5-turbo", temperature=0.0, api_key=OPENAI_API_KEY)
+llm = LLM(model="gpt-4o-mini", temperature=0.0, api_key=OPENAI_API_KEY)
 config = {"configurable": {"thread_id": "1"}}
 
 # Graph repository to manage different graph types

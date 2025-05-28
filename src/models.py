@@ -1,20 +1,15 @@
 from typing import TypedDict, Annotated
-from langgraph.graph.message import add_messages
+from langgraph.graph.message import add_messages, AnyMessage
 
 # Define the state schema 
 class State(TypedDict):
-    messages: Annotated[list, add_messages]
+    messages: Annotated[list[AnyMessage], add_messages]
 
 
 
 
 class LLM:
-    providder = "openai"
-    model = "gpt-3.5-turbo"
-    temperature = 0.0
-    api_key = None
-
-    def __init__(self, model: str = "gpt-3.5-turbo", temperature: float = 0.0, api_key: str = None):
+    def __init__(self, model: str = "gpt-4o-mini", temperature: float = 0.0, api_key: str = None):
         self.model = model
         self.temperature = temperature
         self.api_key = api_key
