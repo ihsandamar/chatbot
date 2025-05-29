@@ -1,8 +1,5 @@
 import gradio as gr
 from src.builders.chatbot_builder import ChatbotBuilder
-from src.chatbot import Chatbot
-from src.config import OPENAI_API_KEY
-from src.graphs.main_graph import MainGraph
 from src.models import LLM
 from src.graphs.graph_repository import GraphRepository
 from src.services.config_loader import ConfigLoader
@@ -34,7 +31,7 @@ container.register("graph_repo", lambda: GraphRepository(container.resolve("llm"
 # Registering the main graph
 chatbot = (
     ChatbotBuilder(container)
-    .with_model(llm_config["model"], llm_config["temperature"])
+    .with_model(llm_config["model"], llm_config["temperature"], llm_config["api_key"])
     .with_graph(config["chatbot"]["graph_type"])
     .with_config({"configurable": {"thread_id": config["chatbot"]["thread_id"]}})
     .build()

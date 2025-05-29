@@ -1,6 +1,5 @@
 # src/builders/chatbot_builder.py
 from src.chatbot import Chatbot
-from src.config import OPENAI_API_KEY
 
 class ChatbotBuilder:
     def __init__(self, container):
@@ -9,10 +8,10 @@ class ChatbotBuilder:
         self._graph_type = "main"
         self._config = {"configurable": {"thread_id": "1"}}
 
-    def with_model(self, model_name: str, temperature: float = 0.0):
+    def with_model(self, model_name: str, temperature: float = 0.0, api_key: str = None):
         def llm_provider():
             from src.models import LLM
-            return LLM(model=model_name, temperature=temperature, api_key=OPENAI_API_KEY)
+            return LLM(model=model_name, temperature=temperature, api_key=api_key)
 
         self.container.register("llm", llm_provider)
         self._llm = self.container.resolve("llm")
