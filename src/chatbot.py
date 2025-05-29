@@ -46,3 +46,17 @@ class Chatbot:
         # Hata varsa kullanıcıya mesaj döndür
         history.append((message, "Bir hata oluştu, lütfen tekrar deneyin."))
         return history
+    
+    def send(self, state: dict) -> str:
+        """
+        Tüm arayüzlerde kullanılabilecek sade mesaj gönderici fonksiyonu.
+        Girdi: {"messages": [{"role": "user", "content": "..."}]}
+        Çıktı: string cevap
+        """
+        response = self.graph.invoke(state, config=self.config)
+
+        if "messages" in response and isinstance(response["messages"], list):
+            last = response["messages"][-1]
+            return last.content if hasattr(last, "content") else last.get("content", "")
+
+        return "Bir hata oluştu, lütfen tekrar deneyin."
