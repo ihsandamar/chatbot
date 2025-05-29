@@ -7,7 +7,7 @@ from src.graphs.graph_repository import GraphRepository
 from src.builders.chatbot_builder import ChatbotBuilder
 
 from src.interfaces.cli_interface import run_cli
-from src.interfaces.run_gradio import run_gradio
+from src.interfaces.gradio_interface import run_gradio
 from src.interfaces.flask_interface import run_flask
 
 
