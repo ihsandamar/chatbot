@@ -1,6 +1,6 @@
 # src/interfaces/gradio_interface.py
 import gradio as gr
-from src.chatbot import Chatbot
+from src.core.chatbot import Chatbot
 
 
 

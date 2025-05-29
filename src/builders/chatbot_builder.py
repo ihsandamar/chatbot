@@ -1,5 +1,5 @@
 # src/builders/chatbot_builder.py
-from src.chatbot import Chatbot
+from src.core.chatbot import Chatbot
 
 class ChatbotBuilder:
     def __init__(self, container):
