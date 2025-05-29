@@ -40,7 +40,10 @@ def build_chatbot():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--interface", choices=["cli", "gradio", "api"], default="cli")
+    parser.add_argument("--interface", choices=["cli", "gradio", "api"], default="cli", 
+                        help="Choose the interface to run the chatbot: cli, gradio, or api")
+    
+      
     args = parser.parse_args()
 
     chatbot = build_chatbot()
