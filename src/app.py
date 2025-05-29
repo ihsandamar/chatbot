@@ -5,6 +5,7 @@ from src.config import OPENAI_API_KEY
 from src.graphs.main_graph import MainGraph
 from src.models import LLM
 from src.graphs.graph_repository import GraphRepository
+from src.services.config_loader import ConfigLoader
 from src.services.container import ServiceContainer
 
 
@@ -14,21 +15,30 @@ from src.services.container import ServiceContainer
 # [ ] FEATURE: Graph repository will be used to manage different graph types
 # [ ] FEATURE: LLM models will be managed by the graph repository functions (setting up the LLM model, temperature, etc.)
 
+config = ConfigLoader.load_config()
 
-# 🔹 1. Service Container oluştur
+
+# This container will manage the dependencies of the application
 container = ServiceContainer()
-container.register("llm", lambda: LLM(model="gpt-4o-mini", temperature=0.0, api_key=OPENAI_API_KEY))
+
+llm_config = config["llm"]
+container.register("llm", lambda: LLM(
+    model=llm_config["model"],
+    temperature=llm_config["temperature"],
+    api_key=llm_config["api_key"]
+))
+
 container.register("graph_repo", lambda: GraphRepository(container.resolve("llm")))
 
-# 🔹 2. Chatbot'u builder ile oluştur
+
+# Registering the main graph
 chatbot = (
     ChatbotBuilder(container)
-    .with_model("gpt-4o-mini")
-    .with_graph("main")
-    .with_config({"configurable": {"thread_id": "1"}})
+    .with_model(llm_config["model"], llm_config["temperature"])
+    .with_graph(config["chatbot"]["graph_type"])
+    .with_config({"configurable": {"thread_id": config["chatbot"]["thread_id"]}})
     .build()
 )
-
 
 #User interface
 
