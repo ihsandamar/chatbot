@@ -11,11 +11,10 @@ from src.interfaces.run_gradio import run_gradio
 from src.interfaces.flask_interface import run_flask
 
 
-def build_chatbot():
-    config = ConfigLoader.load_config()
+def build_chatbot(config_path: str):
 
+    config = ConfigLoader.load_config(config_path)
 
-    # This container will manage the dependencies of the application
     container = ServiceContainer()
 
     llm_config = config["llm"]
@@ -27,8 +26,7 @@ def build_chatbot():
 
     container.register("graph_repo", lambda: GraphRepository(container.resolve("llm")))
 
-
-    # Registering the main graph
+    # 🔹 Chatbot oluşturuluyor
     chatbot = (
         ChatbotBuilder(container)
         .with_model(llm_config["model"], llm_config["temperature"], llm_config["api_key"])
@@ -40,13 +38,15 @@ def build_chatbot():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--interface", choices=["cli", "gradio", "api"], default="cli", 
+    parser.add_argument("--interface", choices=["cli", "gradio", "api"], default="cli",
                         help="Choose the interface to run the chatbot: cli, gradio, or api")
-    
-      
+
+    parser.add_argument("--config", type=str, default="config/config.yaml",
+                        help="Path to the configuration YAML file")
+
     args = parser.parse_args()
 
-    chatbot = build_chatbot()
+    chatbot = build_chatbot(args.config)
 
     if args.interface == "cli":
         run_cli(chatbot)
