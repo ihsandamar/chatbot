@@ -6,9 +6,9 @@ from dotenv import load_dotenv
 
 class ConfigLoader:
     @staticmethod
-    def load_config(path: str = "src/config/config.yaml") -> dict:
+    def load_config(path: str = "config/config.yaml") -> dict:
         # .env dosyasını config klasörü içinde ara
-        dotenv_path = Path("src/config/.env")
+        dotenv_path = Path("config/.env")
         if dotenv_path.exists():
             load_dotenv(dotenv_path)
 
