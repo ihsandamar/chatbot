@@ -13,6 +13,7 @@ class LLM:
         self.model = model
         self.temperature = temperature
         self.api_key = api_key
+        
 
 
     def get_chat(self):
