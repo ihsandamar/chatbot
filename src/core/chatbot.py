@@ -8,7 +8,7 @@ from src.models import LLM
 class Chatbot:
     def __init__(self, llm:LLM, graph: BaseGraph, config: dict = None):
         self.llm = llm
-        self.graph = graph.build_graph()
+        self.graph = graph
         self.history = []
         self.config = config if config else {}
 

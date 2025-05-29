@@ -1,44 +1,33 @@
-# src/graphs/graph_repository.py
-
-from typing import Literal, Dict, Callable
-from src.graphs.main_graph import MainGraph
+from src.graphs.registry import GRAPH_REGISTRY
 from src.models import LLM
-from src.graphs.base_graph import BaseGraph
-
-GraphType = Literal["main"]
-
 
 class GraphRepository:
-    """
-    GraphRepository manages all graph structures centrally using the Repository Pattern.
-    Each graph class should inherit from BaseGraph and be initialized with an LLM instance.
-    """
-
     def __init__(self, llm: LLM):
         self.llm = llm
-        self._registry: Dict[GraphType, Callable[[], BaseGraph]] = {
-            "main": lambda: MainGraph(llm=self.llm),
-            # İleride eklenebilir:
-            # "text2sql": lambda: Text2SQLGraph(llm=self.llm),
-            # "rag": lambda: RAGGraph(llm=self.llm),
-        }
 
-    def get(self, graph_type: GraphType) -> BaseGraph:
-        """
-        Produces and returns the specified graph type.
-        """
-        if graph_type not in self._registry:
-            raise ValueError(f"Geçersiz graph tipi: {graph_type}")
-        return self._registry[graph_type]()
+    def get(self, graph_type: str):
+        if graph_type not in GRAPH_REGISTRY:
+            raise ValueError(f"Graph tipi bulunamadı: {graph_type}")
+        return GRAPH_REGISTRY[graph_type](self.llm).build_graph()
+
+    def get_raw(self, graph_type: str):
+        if graph_type not in GRAPH_REGISTRY:
+            raise ValueError(f"Graph tipi bulunamadı: {graph_type}")
+        return GRAPH_REGISTRY[graph_type](self.llm)
 
     def list_graphs(self):
+        return list(GRAPH_REGISTRY.keys())
+    
+    def register_all(self):
         """
-        Lists all supported graph types.
+        Scans all Python modules under `src.graphs.*` and registers graphs defined with the decorator.
         """
-        return list(self._registry.keys())
+        import pkgutil
+        import importlib
+        import src.graphs  
+        package = src.graphs.__path__
 
-    def register(self, graph_type: GraphType, builder: Callable[[], BaseGraph]):
-        """
-        Registers a new graph type from the outside (for testing, plugin, override scenarios).
-        """
-        self._registry[graph_type] = builder
+        for _, module_name, _ in pkgutil.iter_modules(package):
+            importlib.import_module(f"src.graphs.{module_name}")
+    
+
