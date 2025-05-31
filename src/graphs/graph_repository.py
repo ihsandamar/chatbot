@@ -4,6 +4,7 @@ from src.models import LLM
 class GraphRepository:
     def __init__(self, llm: LLM):
         self.llm = llm
+        self.register_all()  # Register all graphs on initialization
 
     def get(self, graph_type: str):
         if graph_type not in GRAPH_REGISTRY:

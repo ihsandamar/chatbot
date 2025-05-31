@@ -38,7 +38,7 @@ def build_chatbot(config_path: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--interface", choices=["cli", "gradio", "api"], default="cli",
+    parser.add_argument("--interface", choices=["cli", "gradio", "api"], default="gradio",
                         help="Choose the interface to run the chatbot: cli, gradio, or api")
 
     parser.add_argument("--config", type=str, default="config/config.yaml",
