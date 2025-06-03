@@ -5,7 +5,6 @@ class ChatbotBuilder:
     def __init__(self, container):
         self.container = container
         self._llm = None
-        self._graph_type = "main"
         self._config = {"configurable": {"thread_id": "1"}}
 
     def with_model(self, model_name: str, temperature: float = 0.0, api_key: str = None):
