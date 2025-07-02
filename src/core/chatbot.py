@@ -29,6 +29,7 @@ class Chatbot:
                 messages.append({"role": "assistant", "content": bot_msg})
 
         # Yeni gelen kullanıcı mesajını da ekle
+
         messages.append({"role": "user", "content": message})
 
         # State hazırla ve invoke et
@@ -54,6 +55,8 @@ class Chatbot:
         Çıktı: string cevap
         """
         response = self.graph.invoke(state, config=self.config)
+        print(response.tool_calls)
+
 
         if "messages" in response and isinstance(response["messages"], list):
             last = response["messages"][-1]

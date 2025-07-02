@@ -1,0 +1,8 @@
+llm:
+  model: gpt-4o-mini
+  temperature: 0.0
+  api_key: ${OPENAI_API_KEY}
+
+chatbot:
+  graph_type: main_graph_with_tools
+  thread_id: "1"
