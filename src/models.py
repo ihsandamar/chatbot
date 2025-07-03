@@ -1,10 +1,11 @@
-from typing import TypedDict, Annotated
+from dataclasses import dataclass
+from typing import NotRequired, Optional, TypedDict, Annotated, List, Literal, Any
 from langgraph.graph.message import add_messages, AnyMessage
 
 # Define the state schema 
 class State(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
-
+    tool_calls: NotRequired[List[dict]]
 
 
 
@@ -25,3 +26,6 @@ class LLM:
         chat = self.get_chat()
         response = chat.invoke(messages)
         return response.content if hasattr(response, "content") else response.get("content", "")
+
+
+
