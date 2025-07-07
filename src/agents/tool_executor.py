@@ -1,36 +1,64 @@
 # src/agents/tool_executor.py
 from src.models import State
-from src.tools.math_tools import MathToolkit
+from langchain_core.tools import BaseTool
+from typing import Dict, Any
+from src.tools.math_tools import MathToolkit  # Gerekirse başka toolkitler de buraya eklenebilir
 
 
 class ToolExecutor:
     def __init__(self):
-        self.toolkit = MathToolkit()
+        # Tüm kullanılabilir tool'ları bir araya getir
+        self.available_tools = self._load_all_tools()
+
+    def _load_all_tools(self) -> Dict[str, BaseTool]:
+        """
+        Tüm toolkit'lerden tool'ları al ve isimlerine göre bir dict oluştur.
+        """
+        all_toolkits = [
+            MathToolkit(),  # gelecekte başka toolkitler eklenebilir
+        ]
+        tool_dict = {}
+        for toolkit in all_toolkits:
+            for tool in toolkit.get_tools():
+                tool_name = getattr(tool, "name", None)
+                if tool_name:
+                    tool_dict[tool_name] = tool
+                else:
+                    print(f"[ToolExecutor] Tool name bulunamadı: {tool}")
+        return tool_dict
 
     def run(self, state: State) -> State:
         messages = state["messages"]
         tool_calls = state.get("tool_calls", [])
+        tool_outputs = []
 
         if not tool_calls:
             return {"messages": messages, "tool_calls": []}
 
-        last_response = messages[-1]  # LLM cevabı
-        tool_outputs = []
-
         for call in tool_calls:
-            tool_name = call["name"]
+            tool_name = call.get("name")
             args = call.get("args", {})
-            a = args.get("a")
-            b = args.get("b")
+            tool_call_id = call.get("id") or call.get("tool_call_id")
 
-            tool = self.toolkit.get_tool_by_name(tool_name)
-            result = tool(a, b)
-            tool_outputs.append(f"✅ Tool `{tool_name}` sonucu: {result}")
+            tool = self.available_tools.get(tool_name)
+            if not tool:
+                result = f"🚫 Tool '{tool_name}' bulunamadı."
+            else:
+                try:
+                    result = tool.invoke(args)
+                except Exception as e:
+                    result = f"❌ Tool '{tool_name}' hatası: {str(e)}"
 
-        # Tool çıktısını yeni bir LLM mesajı gibi sonuna ekle
+            tool_outputs.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": str(result),
+            })
+
         updated_messages = messages + tool_outputs
 
         return {
             "messages": updated_messages,
-            "tool_calls": [],  # İşlendi, temizleniyor
+            "tool_calls": [],
         }

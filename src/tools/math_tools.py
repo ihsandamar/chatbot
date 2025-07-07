@@ -1,5 +1,8 @@
 from langchain_openai import ChatOpenAI
+from langchain_core.tools import BaseTool, tool
+from langchain_core.tools.base import BaseToolkit
 
+@tool
 def multiply(a: int, b: int) -> int:
     """Multiply a and b.
 
@@ -10,6 +13,7 @@ def multiply(a: int, b: int) -> int:
     return a * b
 
 # This will be a tool
+@tool
 def add(a: int, b: int) -> int:
     """Adds a and b.
 
@@ -19,6 +23,7 @@ def add(a: int, b: int) -> int:
     """
     return a + b
 
+@tool
 def divide(a: int, b: int) -> float:
     """Divide a and b.
 
@@ -28,12 +33,11 @@ def divide(a: int, b: int) -> float:
     """
     return a / b
 
-class MathToolkit:
+class MathToolkit(BaseToolkit):
     """Toolkit for mathematical operations."""
-
     def __init__(self):
-        self.name = "MathToolkit"
-        self.description = "A toolkit for performing basic math operations."
+        """Initialize the MathToolkit with available tools."""
+        super().__init__(name = "MathToolkit", description="Toolkit for basic math operations like addition, multiplication, and division.")
 
     def get_tools(self):
         return [add, multiply, divide]
