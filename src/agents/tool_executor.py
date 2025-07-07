@@ -3,6 +3,7 @@ from src.models import State
 from langchain_core.tools import BaseTool
 from typing import Dict, Any
 from src.tools.math_tools import MathToolkit  # Gerekirse başka toolkitler de buraya eklenebilir
+from src.tools.date_tool import DateToolkit  # Tarih işlemleri için eklenen toolkit
 
 
 class ToolExecutor:
@@ -16,6 +17,7 @@ class ToolExecutor:
         """
         all_toolkits = [
             MathToolkit(),  # gelecekte başka toolkitler eklenebilir
+            DateToolkit()  # Tarih işlemleri için eklenen toolkit
         ]
         tool_dict = {}
         for toolkit in all_toolkits:

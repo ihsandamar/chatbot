@@ -6,6 +6,7 @@ from src.graphs.registry import register_graph
 from src.agents.llm_agent import LLMAgent
 from src.agents.tool_executor import ToolExecutor
 from src.tools.math_tools import MathToolkit
+from src.tools.date_tool import DateToolkit
 from langgraph.checkpoint.memory import MemorySaver
 
 
@@ -17,8 +18,12 @@ class MainGraph(BaseGraph):
     def build_graph(self):
         memory = MemorySaver()
 
+        tools = MathToolkit().get_tools()
+        tools += DateToolkit().get_tools()  # Eğer DateToolkit eklemek isterseniz
+
+
         # LLM + Tool binding
-        llm_with_tools = self.llm.get_chat().bind_tools(MathToolkit().get_tools())
+        llm_with_tools = self.llm.get_chat().bind_tools(tools)
 
         # Agent ve Executor tanımları
         llm_agent = LLMAgent(llm_with_tools)
