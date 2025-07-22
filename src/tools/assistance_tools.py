@@ -10,11 +10,7 @@ from langchain_core.tools import BaseTool
 def human_assistance_tool(query: str) -> str:
     """Request assistance from a human."""
     human_response = interrupt({"query": query})
-    result = human_response.get("result")
-    print(result)
-    return human_response.get("query", "No response received from human assistance.")
-
-
+    return f"Human assistance requested for: {query}. Response: {human_response}"
 @tool
 def update_state_tool(state: State, key: str, value: str) -> State:
     """Update the state with a new key-value pair."""

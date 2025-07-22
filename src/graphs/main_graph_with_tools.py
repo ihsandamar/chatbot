@@ -9,12 +9,15 @@ from src.tools.assistance_tools import AssistanceToolkit
 from src.tools.math_tools import MathToolkit
 from src.tools.date_tool import DateToolkit
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import create_react_agent
+from langgraph.prebuilt import ToolNode
 
 
 @register_graph("main_graph_with_tools")
 class MainGraph(BaseGraph):
     def __init__(self, llm: LLM):
         super().__init__(llm=llm, state_class=State)
+
 
     def build_graph(self):
         memory = MemorySaver()
@@ -23,27 +26,38 @@ class MainGraph(BaseGraph):
         tools += DateToolkit().get_tools()  # Eğer DateToolkit eklemek isterseniz
         tools += AssistanceToolkit().get_tools()  # Yardımcı araçlar
 
+        agent = create_react_agent(
+            model=self.llm.get_chat(),
+            tools=tools,
+        )
 
-        # LLM + Tool binding
-        llm_with_tools = self.llm.get_chat().bind_tools(tools)
+        def assistant_final(state: State) -> State:
+            # Son mesaj listesine bakarak tek seferlik cevap üretiyoruz
 
-        # Agent ve Executor tanımları
-        llm_agent = LLMAgent(llm_with_tools)
-        tool_executor = ToolExecutor()
+            response = self.llm.get_chat().invoke(state["messages"])
+            return {"messages": state["messages"] + [response]}
+
+
+        tool_node = ToolNode(tools)
+
 
         graph = StateGraph(State)
-        graph.add_node("llm_agent", llm_agent.run)
-        graph.add_node("tool_executor", tool_executor.run)
+        graph.add_node("agent", agent)
+        graph.add_node("tool_executor", tool_node)
+        graph.add_node("assistant_final", assistant_final)
 
-        graph.set_entry_point("llm_agent")
-
-        # Eğer tool call varsa executor'a yönlendir
-        def route(state: State) -> str:
-            if state.get("tool_calls"):
-                return "tool_executor"
-            return END
-
-        graph.add_conditional_edges("llm_agent", route)
-        graph.add_edge("tool_executor", END)
+        graph.add_edge(START, "agent")
+        graph.add_conditional_edges(
+            "agent",
+            lambda s: "tool_executor" if s["messages"][-1].additional_kwargs.get("function_call") else "assistant_final",
+            path_map={
+                "tool_executor": "tool_executor",
+                "assistant_final": "assistant_final",
+            },
+        )
+        graph.add_edge("tool_executor", "assistant_final")
+        graph.add_edge("assistant_final", END)
 
         return graph.compile(name="main_graph_with_tools", checkpointer=memory)
+    
+
