@@ -17,11 +17,11 @@ def build_chatbot(config_path: str):
 
     container = ServiceContainer()
 
-    llm_config = config["llm"]
+    llm_config = config.llm
     container.register("llm", lambda: LLM(
-        model=llm_config["model"],
-        temperature=llm_config["temperature"],
-        api_key=llm_config["api_key"]
+        model=llm_config.model,
+        temperature=llm_config.temperature,
+        api_key=llm_config.api_key
     ))
 
     container.register("graph_repo", lambda: GraphRepository(container.resolve("llm")))
@@ -29,9 +29,9 @@ def build_chatbot(config_path: str):
     # 🔹 Chatbot oluşturuluyor
     chatbot = (
         ChatbotBuilder(container)
-        .with_model(llm_config["model"], llm_config["temperature"], llm_config["api_key"])
-        .with_graph(config["chatbot"]["graph_type"])
-        .with_config({"configurable": {"thread_id": config["chatbot"]["thread_id"]}})
+        .with_model(llm_config.model, llm_config.temperature, llm_config.api_key)
+        .with_graph(config.chatbot.graph_type)
+        .with_config({"configurable": {"thread_id": config.chatbot.thread_id}})
         .build()
     )
     return chatbot
