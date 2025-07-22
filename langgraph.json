@@ -10,7 +10,8 @@
   ],
   "graphs": {
       "main_graph": "src/graphs/graph_entrypoints.py:main_graph",
-      "main_graph_with_tools": "src/graphs/graph_entrypoints.py:main_graph_with_tools"
+      "main_graph_with_tools": "src/graphs/graph_entrypoints.py:main_graph_with_tools",
+      "tool_calling_graph": "tutorial/tool_calling.py:make_graph"
   },
   "env": "config/.env"
 }
