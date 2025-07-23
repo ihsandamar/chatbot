@@ -1,5 +1,7 @@
 # main.py
 import argparse
+import os
+import runpy
 from src.models import LLM
 from src.services.config_loader import ConfigLoader
 from src.services.container import ServiceContainer
@@ -44,13 +46,33 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="config/config.yaml",
                         help="Path to the configuration YAML file")
 
+    parser.add_argument("--tutorial", type=str, default=None,
+                        help="Run a specific tutorial script")
+
     args = parser.parse_args()
 
-    chatbot = build_chatbot(args.config)
 
+    if args.tutorial:
+        # 1) tutorial dosyasının tam yolunu oluştur
+        base_dir = os.path.dirname(__file__)   # main.py'nin bulunduğu klasör
+        tutorial_path = os.path.join(base_dir, "tutorial", args.tutorial)
+
+        # 2) Dosyanın varlığını kontrol et
+        if not os.path.isfile(tutorial_path):
+            raise FileNotFoundError(f"Tutorial dosyası bulunamadı: {tutorial_path}")
+
+        # 3) Script’i ayrı bir "__main__" namespace'inde çalıştır
+        runpy.run_path(tutorial_path, run_name="__main__")
+        # İsterseniz hemen process'i sonlandırabilirsiniz:
+        import sys; sys.exit()
+
+
+    chatbot = build_chatbot(args.config)
+    
     if args.interface == "cli":
         run_cli(chatbot)
     elif args.interface == "gradio":
         run_gradio(chatbot)
     elif args.interface == "api":
         run_flask(chatbot)
+
