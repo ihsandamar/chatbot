@@ -1,6 +1,6 @@
 # main.py
 import argparse
-from src.models import LLM
+from src.models.models import LLM
 from src.services.config_loader import ConfigLoader
 from src.services.container import ServiceContainer
 from src.graphs.graph_repository import GraphRepository

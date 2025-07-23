@@ -9,7 +9,7 @@ class ChatbotBuilder:
 
     def with_model(self, model_name: str, temperature: float = 0.0, api_key: str = None):
         def llm_provider():
-            from src.models import LLM
+            from src.models.models import LLM
             return LLM(model=model_name, temperature=temperature, api_key=api_key)
 
         self.container.register("llm", llm_provider)

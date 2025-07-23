@@ -1,5 +1,5 @@
 from src.graphs.graph_repository import GraphRepository
-from src.models import LLM
+from src.models.models import LLM
 from src.graphs.main_graph import MainGraph
 from src.services.config_loader import ConfigLoader
 

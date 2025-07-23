@@ -1,6 +1,6 @@
 # src/graphs/main_graph_with_tools.py
 from langgraph.graph import StateGraph, START, END
-from src.models import LLM, State
+from src.models.models import LLM, State
 from src.graphs.base_graph import BaseGraph
 from src.graphs.registry import register_graph
 from src.agents.llm_agent import LLMAgent

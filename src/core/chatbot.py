@@ -2,7 +2,7 @@
 from typing import List, Tuple
 from src.graphs.base_graph import BaseGraph
 from src.graphs.main_graph import MainGraph
-from src.models import LLM
+from src.models.models import LLM
 
 
 class Chatbot:
