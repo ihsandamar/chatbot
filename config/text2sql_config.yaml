@@ -1,0 +1,64 @@
+llm:
+  model: gpt-4o-mini
+  temperature: 0.0
+  api_key: ${OPENAI_API_KEY}
+  api_base: https://api.openai.com/v1
+
+chatbot:
+  graph_type: text2sql
+  thread_id: "1"
+
+database:
+  uri: mssql+pyodbc://sa:Vega1234@DESKTOP-TIEAGO8/FORZA?driver=ODBC+Driver+17+for+SQL+Server
+
+ # Connection settings
+  pool_size: 5
+  max_overflow: 10
+  pool_timeout: 30
+  pool_recycle: 3600
+
+chatbot:
+  graph_type: text2sql
+  thread_id: "text2sql_session"
+
+# Text2SQL specific settings
+text2sql:
+  max_tables_per_query: 8
+  max_schema_batch_size: 3
+  query_timeout: 30
+  result_limit: 100
+  
+  # Module-specific table preferences
+  module_preferences:
+    MasterReports:
+      preferred_tables: ["customers", "products", "orders", "sales", "master_data"]
+      keywords: ["customer", "product", "order", "sales", "master", "summary"]
+    
+    Accounting:
+      preferred_tables: ["transactions", "accounts", "invoices", "payments", "ledger", "financial"]
+      keywords: ["transaction", "account", "invoice", "payment", "ledger", "financial", "accounting"]
+    
+    DynamicReporting:
+      preferred_tables: ["reports", "templates", "custom", "dynamic", "user_queries"]
+      keywords: ["report", "template", "custom", "dynamic", "analysis"]
+    
+    Select:
+      preferred_tables: []  # All tables available
+      keywords: []
+
+  # Security settings
+  security:
+    allowed_operations: ["SELECT"]
+    forbidden_keywords: ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "EXEC", "EXECUTE"]
+    max_query_length: 2000
+    enable_query_validation: true
+
+  # Performance settings
+  performance:
+    default_limit: 100
+    max_limit: 1000
+    enable_query_optimization: true
+    cache_schemas: true
+    schema_cache_ttl: 3600  
+
+  
