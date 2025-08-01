@@ -1,4 +1,5 @@
 from src.graphs.graph_repository import GraphRepository
+from src.graphs.test_graph import TestGraph
 from src.graphs.text2sql_graph import Text2SQLGraph
 from src.models.models import LLM
 from src.graphs.main_graph import MainGraph
@@ -33,6 +34,14 @@ def text2sql_graph():
     llm = LLM(model=config.llm.model, temperature=config.llm.temperature, api_key=config.llm.api_key)
     db = SQLDatabase.from_uri(config.database.uri)
     graph = Text2SQLGraph(llm=llm, db=db).build_graph()
+    return graph
+
+
+def test_graph():
+    config = ConfigLoader.load_config("config/text2sql_config.yaml")
+    llm = LLM(model=config.llm.model, temperature=config.llm.temperature, api_key=config.llm.api_key)
+    db = SQLDatabase.from_uri(config.database.uri)
+    graph = TestGraph(llm=llm, db=db).build_graph()
     return graph
 
 
