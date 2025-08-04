@@ -18,7 +18,7 @@ class ERPChatbot:
         
         self.logger.info("ERP Chatbot initialized", config_path=config_path)
     
-    def send_message(self, message: str) -> str:
+    def send_message(self, message: str, return_all_messages: bool = False) -> str:
         """Send a message to the chatbot and get response"""
         try:
             # Create human message
@@ -35,18 +35,38 @@ class ERPChatbot:
             # Update conversation history
             self.conversation_history = response_state["messages"]
             
-            # Extract and return the latest AI response
-            for msg in reversed(response_state["messages"]):
-                if hasattr(msg, 'type') and msg.type == 'ai':
-                    return msg.content
-            
-            return "No response generated"
+            if return_all_messages:
+                # Return formatted conversation
+                return self._format_all_messages(response_state["messages"])
+            else:
+                # Extract and return the latest AI response
+                for msg in reversed(response_state["messages"]):
+                    if hasattr(msg, 'type') and msg.type == 'ai':
+                        return msg.content
+                
+                return "No response generated"
             
         except Exception as e:
             self.logger.error("Failed to send message", error=str(e))
             return f"Error processing message: {str(e)}"
     
-    def response_handler(self, history: List[Tuple[str, str]], message: str) -> List[Tuple[str, str]]:
+    def _format_all_messages(self, messages: List) -> str:
+        """Format all messages in conversation for display"""
+        formatted_messages = []
+        
+        for i, msg in enumerate(messages):
+            if hasattr(msg, 'type'):
+                if msg.type == 'human':
+                    formatted_messages.append(f"👤 **User:** {msg.content}")
+                elif msg.type == 'ai':
+                    formatted_messages.append(f"🤖 **Assistant:** {msg.content}")
+            else:
+                # Fallback for messages without type
+                formatted_messages.append(f"💬 **Message {i+1}:** {str(msg)}")
+        
+        return "\n\n---\n\n".join(formatted_messages)
+    
+    def response_handler(self, history: List[Tuple[str, str]], message: str, show_full_conversation: bool = False) -> List[Tuple[str, str]]:
         """Gradio-compatible response handler"""
         try:
             # Convert history to messages
@@ -64,24 +84,82 @@ class ERPChatbot:
             current_state = ChatbotState(messages=messages)
             response_state = self.controller.process_message(current_state)
             
-            # Extract AI response
-            ai_response = "No response generated"
-            for msg in reversed(response_state["messages"]):
-                if hasattr(msg, 'type') and msg.type == 'ai':
-                    ai_response = msg.content
-                    break
-            
             # Update conversation history
             self.conversation_history = response_state["messages"]
             
-            # Return updated history
-            history.append((message, ai_response))
-            return history
+            if show_full_conversation:
+                # Show all new messages that were added during processing
+                new_messages = response_state["messages"][len(messages):]
+                
+                # Add all new messages to history
+                for msg in new_messages:
+                    if hasattr(msg, 'type') and msg.type == 'ai':
+                        history.append((message if len(history) == len(messages) - 1 else "", msg.content))
+                        message = ""  # Only show user message once
+                
+                return history
+            else:
+                # Extract latest AI response
+                ai_response = "No response generated"
+                for msg in reversed(response_state["messages"]):
+                    if hasattr(msg, 'type') and msg.type == 'ai':
+                        ai_response = msg.content
+                        break
+                
+                # Return updated history
+                history.append((message, ai_response))
+                return history
             
         except Exception as e:
             self.logger.error("Response handler failed", error=str(e))
             history.append((message, f"Error: {str(e)}"))
             return history
+    
+    def get_full_conversation(self) -> str:
+        """Get the full conversation formatted for display"""
+        return self._format_all_messages(self.conversation_history)
+    
+    def get_module_selection_buttons(self) -> list:
+        """Get module selection buttons for Gradio interface"""
+        return [
+            "1. Raporlar",
+            "2. Teknik Destek", 
+            "3. Veritabanı Sorguları",
+            "4. Müşteri Hizmetleri",
+            "5. Özellik Talepleri",
+            "6. Dokümantasyon",
+            "7. Şirket Bilgileri"
+        ]
+    
+    def handle_button_click(self, button_text: str) -> str:
+        """Handle button click from Gradio interface"""
+        try:
+            # Extract number from button text
+            if button_text and button_text[0].isdigit():
+                module_number = button_text[0]
+                return self.send_message(module_number)
+            else:
+                return self.send_message(button_text)
+        except Exception as e:
+            self.logger.error("Button click handling failed", error=str(e))
+            return f"Error handling button click: {str(e)}"
+    
+    def check_if_awaiting_module_selection(self) -> bool:
+        """Check if chatbot is waiting for module selection"""
+        try:
+            if not self.conversation_history:
+                return False
+            
+            # Check the last AI message for module selection prompt
+            for msg in reversed(self.conversation_history):
+                if hasattr(msg, 'type') and msg.type == 'ai':
+                    content = msg.content.lower()
+                    return "modülü seçmek istiyorsunuz" in content or "hangi modülü" in content
+            
+            return False
+        except Exception as e:
+            self.logger.error("Failed to check module selection state", error=str(e))
+            return False
     
     def reset_conversation(self):
         """Reset conversation history"""

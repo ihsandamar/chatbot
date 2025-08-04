@@ -14,6 +14,7 @@ from src.core.states.transformers import state_transformer
 from src.services.app_logger import log
 import re
 from datetime import datetime
+# Text2SQL import will be done dynamically to avoid circular imports
 
 class ModuleType(Enum):
     """Available ERP modules for routing"""
@@ -44,6 +45,14 @@ class RoutingDecision(BaseModel):
     detected_keywords: List[str] = Field(default_factory=list, description="Keywords that influenced the decision")
     suggested_response: str = Field(description="Suggested response to the user")
     requires_clarification: bool = Field(default=False, description="Whether clarification is needed")
+
+class ChatModeConfig(BaseModel):
+    """Configuration for daily chat mode"""
+    enabled: bool = Field(default=False, description="Enable daily chat format")
+    system_prompt: str = Field(default="", description="Custom system prompt for daily chat")
+    casual_responses: bool = Field(default=True, description="Use casual conversational responses")
+    context_aware: bool = Field(default=True, description="Remember conversation context")
+    personalization: bool = Field(default=False, description="Enable personalized responses")
 
 class IntentDetector:
     """Advanced intent detection with confidence scoring"""
@@ -89,16 +98,19 @@ class IntentDetector:
             ModuleType.TEXT2SQL: {
                 "turkish_keywords": [
                     "sql", "sorgu", "query", "veritabanı", "database", "tablo", "table",
-                    "select", "veri", "data", "kayıt", "record"
+                    "select", "veri", "data", "kayıt", "record", "dynamic-reporting", 
+                    "dinamik", "rapor", "reporting"
                 ],
                 "english_keywords": [
                     "sql", "query", "database", "table", "select", "data", "record",
-                    "show me", "list", "find", "search"
+                    "show me", "list", "find", "search", "dynamic-reporting", "dynamic",
+                    "reporting"
                 ],
                 "context_patterns": [
                     r"select\s+.*\s+from",  # SQL patterns
                     r"tablo.*göster|show.*table",
-                    r"listele|list\s+all"
+                    r"listele|list\s+all",
+                    r"dynamic[-_]reporting|dinamik.*rapor"  # Dynamic reporting patterns
                 ],
                 "weight": 1.0
             },
@@ -284,17 +296,34 @@ Hangi konuda yardıma ihtiyacınız var?"""
 class SupervisorGraph(BaseGraph):
     """Supervisor graph that coordinates module routing and manages conversation flow"""
     
-    def __init__(self, llm: LLM):
+    def __init__(self, llm: LLM, chat_mode_config: Optional[ChatModeConfig] = None):
         super().__init__(llm=llm, state_class=State)
         self.logger = log.get(module="supervisor_graph", cls="SupervisorGraph")
         self.intent_detector = IntentDetector()
         self.extractor = message_extractor
         self.transformer = state_transformer
         
+        # Chat mode configuration
+        if isinstance(chat_mode_config, dict):
+            # Convert dict to ChatModeConfig object
+            self.chat_mode_config = ChatModeConfig(**chat_mode_config)
+        elif chat_mode_config is None:
+            self.chat_mode_config = ChatModeConfig()
+        else:
+            self.chat_mode_config = chat_mode_config
+        
         # Initialize routing model with structured output
         self._setup_routing_model()
         
-        self.logger.info("SupervisorGraph initialized")
+        # Add daily chat node if enabled
+        self._daily_chat_enabled = self.chat_mode_config.enabled
+        
+        # Initialize Text2SQL subgraph lazily to avoid circular imports
+        self.text2sql_graph = None
+        self._text2sql_initialized = False
+        
+        self.logger.info("SupervisorGraph initialized", 
+                        daily_chat_enabled=self._daily_chat_enabled)
     
     def _setup_routing_model(self):
         """Setup LLM-based routing model with tool binding"""
@@ -336,50 +365,23 @@ Karar verirken anahtar kelimeleri, bağlamı ve kullanıcının gerçek niyetini
             memory = MemorySaver()
             graph = StateGraph(State)
             
-            # Add all nodes
+            # Add simplified nodes
             graph.add_node("welcome", self.welcome_node)
-            graph.add_node("intent_detection", self.intent_detection_node)
-            graph.add_node("clarification", self.clarification_node)
-            graph.add_node("module_router", self.module_router_node)
-            graph.add_node("show_options", self.show_options_node)
+            graph.add_node("module_selection", self.module_selection_node)
+            graph.add_node("module_confirmation", self.module_confirmation_node)
+            graph.add_node("await_user_prompt", self.await_user_prompt_node)
+            graph.add_node("process_module_request", self.process_module_request_node)
             graph.add_node("error_handler", self.error_handler_node)
             
             self.logger.debug("Nodes added to graph")
             
-            # Define edges
+            # Define simplified linear flow
             graph.add_edge(START, "welcome")
-            graph.add_edge("welcome", "intent_detection")
-            
-            # Conditional routing from intent detection
-            graph.add_conditional_edges(
-                "intent_detection",
-                self.determine_next_node,
-                {
-                    "clarification": "clarification",
-                    "show_options": "show_options", 
-                    "module_router": "module_router",
-                    "error_handler": "error_handler",
-                    "end": END
-                }
-            )
-            
-            # From clarification, go back to intent detection or route to module
-            graph.add_conditional_edges(
-                "clarification",
-                self.determine_next_node,
-                {
-                    "intent_detection": "intent_detection",
-                    "module_router": "module_router",
-                    "show_options": "show_options",
-                    "end": END
-                }
-            )
-            
-            # From show_options, wait for user choice then detect intent
-            graph.add_edge("show_options", "intent_detection")
-            
-            # Module router and error handler end the conversation
-            graph.add_edge("module_router", END)
+            graph.add_edge("welcome", "module_selection")
+            graph.add_edge("module_selection", "module_confirmation")
+            graph.add_edge("module_confirmation", "await_user_prompt")
+            graph.add_edge("await_user_prompt", "process_module_request")
+            graph.add_edge("process_module_request", END)
             graph.add_edge("error_handler", END)
             
             self.logger.debug("Edges defined")
@@ -389,7 +391,8 @@ Karar verirken anahtar kelimeleri, bağlamı ve kullanıcının gerçek niyetini
                 checkpointer=memory
             )
             
-            self.logger.info("Supervisor graph compiled successfully")
+            self.logger.info("Supervisor graph compiled successfully", 
+                           daily_chat_enabled=self._daily_chat_enabled)
             return compiled_graph
             
         except Exception as e:
@@ -397,43 +400,539 @@ Karar verirken anahtar kelimeleri, bağlamı ve kullanıcının gerçek niyetini
             raise
     
     def welcome_node(self, state: State) -> State:
-        """Welcome new users with personalized greeting"""
+        """Welcome users and show module selection options"""
         try:
             self.logger.debug("Welcome node executed")
             
             messages = state["messages"]
             
-            # Check if this is a new conversation
-            is_new_conversation = len(messages) <= 1
-            
-            if is_new_conversation:
-                welcome_message = AIMessage(content=f"""👋 **Merhaba! ERP Asistanınıza Hoş Geldiniz**
+            # Always show module selection menu
+            welcome_message = AIMessage(content="""🎯 **ERP Yardım Sistemi'ne Hoş Geldiniz!**
 
-Ben size aşağıdaki konularda yardımcı olabilir:
+Lütfen yapmak istediğiniz işlemi seçin:
 
-📊 **Raporlama & Analiz** - Satış, ciro ve performans raporları
-🎧 **Teknik Destek** - Sistem sorunları ve çözümleri  
-🔍 **Veritabanı Sorguları** - SQL sorguları ve veri analizi
-👥 **Müşteri Hizmetleri** - Sipariş takibi ve müşteri desteği
-💡 **Özellik Talepleri** - Sistem geliştirme önerileri
-📚 **Dokümantasyon** - Kullanım kılavuzları ve eğitim
-🏢 **Şirket Bilgileri** - İletişim ve genel bilgiler
+**🔢 1. Raporlar** - Satış raporları, ciro analizleri, grafikler
+**🛠️ 2. Teknik Destek** - Sistem sorunları, hata çözümü, yardım
+**📊 3. Veritabanı Sorguları** - SQL sorguları, data analizi, dinamik raporlar
+**👥 4. Müşteri Hizmetleri** - Sipariş takibi, ödeme desteği
+**💡 5. Özellik Talepleri** - Yeni özellik önerileri, geliştirme
+**📚 6. Dokümantasyon** - Kullanım kılavuzları, eğitim materyalleri
+**🏢 7. Şirket Bilgileri** - İletişim, genel bilgiler
 
-**Ne yapmak istiyorsunuz?** Size nasıl yardımcı olabilirim?
+**Seçim yapmak için:**
+• Numarayı yazın (örn: "1" veya "3")
+• Anahtar kelimesini yazın (örn: "raporlar", "sql", "destek")
 
-*Örnek: "Bu ayın ciro raporunu göster" veya "Müşteri tablosunu listele"*""")
-            else:
-                # Returning user
-                welcome_message = AIMessage(content="👋 **Tekrar hoş geldiniz!** Size nasıl yardımcı olabilirim?")
+Hangi modülü seçmek istiyorsunuz?""")
             
             return {
+                **state,
                 "messages": messages + [welcome_message],
-                "workflow_step": "welcomed"
+                "workflow_step": "awaiting_module_selection",
+                "available_modules": [
+                    {"id": "1", "name": "raporlar", "module": ModuleType.REPORTING},
+                    {"id": "2", "name": "destek", "module": ModuleType.SUPPORT},
+                    {"id": "3", "name": "sql", "module": ModuleType.TEXT2SQL},
+                    {"id": "4", "name": "müşteri", "module": ModuleType.CUSTOMER_SERVICE},
+                    {"id": "5", "name": "talep", "module": ModuleType.REQUEST},
+                    {"id": "6", "name": "dokuman", "module": ModuleType.DOCUMENTS_TRAINING},
+                    {"id": "7", "name": "şirket", "module": ModuleType.COMPANY_INFO}
+                ]
             }
             
         except Exception as e:
             self.logger.error("Welcome node failed", error=str(e))
             return self.error_handler_node(state)
+    
+    def module_selection_node(self, state: State) -> State:
+        """Parse user selection and identify chosen module"""
+        try:
+            self.logger.debug("Module selection node executed")
+            
+            messages = state["messages"]
+            user_message = self.extractor.extract_user_prompt(messages)
+            available_modules = state.get("available_modules", [])
+            
+            # Parse user input
+            selected_module = None
+            user_input = user_message.lower().strip()
+            
+            # Check for number selection
+            if user_input.isdigit():
+                module_id = user_input
+                for module in available_modules:
+                    if module["id"] == module_id:
+                        selected_module = module
+                        break
+            
+            # Check for keyword selection
+            if not selected_module:
+                for module in available_modules:
+                    if module["name"] in user_input or module["name"].replace("ü", "u").replace("ş", "s") in user_input:
+                        selected_module = module
+                        break
+                
+                # Additional keyword matching
+                keyword_mapping = {
+                    "rapor": "raporlar",
+                    "report": "raporlar", 
+                    "analiz": "raporlar",
+                    "support": "destek",
+                    "yardım": "destek",
+                    "help": "destek",
+                    "database": "sql",
+                    "veritaban": "sql",
+                    "sorgu": "sql",
+                    "query": "sql",
+                    "customer": "müşteri",
+                    "musteri": "müşteri",
+                    "siparis": "müşteri",
+                    "request": "talep",
+                    "öneri": "talep",
+                    "feature": "talep",
+                    "doc": "dokuman",
+                    "egitim": "dokuman",
+                    "training": "dokuman",
+                    "company": "şirket",
+                    "sirket": "şirket",
+                    "iletisim": "şirket"
+                }
+                
+                for keyword, module_name in keyword_mapping.items():
+                    if keyword in user_input:
+                        for module in available_modules:
+                            if module["name"] == module_name:
+                                selected_module = module
+                                break
+                        if selected_module:
+                            break
+            
+            if selected_module:
+                return {
+                    **state,
+                    "messages": messages,
+                    "workflow_step": "module_selected",
+                    "selected_module": selected_module,
+                    "selected_module_type": selected_module["module"]
+                }
+            else:
+                # Invalid selection
+                error_message = AIMessage(content="""❌ **Geçersiz seçim!**
+
+Lütfen aşağıdakilerden birini seçin:
+• **1-7 arası bir sayı** (örn: "3")
+• **Anahtar kelime** (örn: "sql", "raporlar", "destek")
+
+Hangi modülü seçmek istiyorsunuz?""")
+                
+                return {
+                    **state,
+                    "messages": messages + [error_message],
+                    "workflow_step": "invalid_selection"
+                }
+                
+        except Exception as e:
+            self.logger.error("Module selection failed", error=str(e))
+            return self.error_handler_node(state)
+    
+    def module_confirmation_node(self, state: State) -> State:
+        """Confirm module selection and provide information"""
+        try:
+            self.logger.debug("Module confirmation node executed")
+            
+            messages = state["messages"]
+            selected_module = state.get("selected_module", {})
+            workflow_step = state.get("workflow_step", "")
+            
+            # Handle invalid selection
+            if workflow_step == "invalid_selection":
+                return {
+                    **state,
+                    "workflow_step": "awaiting_module_selection"
+                }
+            
+            if not selected_module:
+                return self.error_handler_node(state)
+            
+            module_type = selected_module["module"]
+            
+            # Create confirmation message with module-specific information
+            if module_type == ModuleType.REPORTING:
+                confirmation_content = """✅ **Raporlama Modülü Seçildi**
+
+Bu modülde şunları yapabilirsiniz:
+• 📊 Satış raporları görüntüleme
+• 💰 Ciro analizleri
+• 📈 Performans grafikleri
+• 📋 Özel raporlar oluşturma
+
+Raporlama sistemi başlatılıyor..."""
+
+            elif module_type == ModuleType.SUPPORT:
+                confirmation_content = """✅ **Teknik Destek Modülü Seçildi**
+
+Bu modülde şunları yapabilirsiniz:  
+• 🔧 Sistem sorunlarını çözme
+• ❓ Kullanım yardımı alma
+• 🐛 Hata raporlama
+• 📞 Teknik destek talep etme
+
+Teknik destek sistemi başlatılıyor..."""
+
+            elif module_type == ModuleType.TEXT2SQL:
+                confirmation_content = """✅ **Veritabanı Sorguları Modülü Seçildi**
+
+Bu modülde şunları yapabilirsiniz:
+• 🗃️ Veritabanı sorgulama
+• 📊 SQL sorguları oluşturma  
+• 📈 Dinamik raporlar
+• 🔍 Veri analizi
+
+Veritabanı sorgu sistemi başlatılıyor..."""
+
+            elif module_type == ModuleType.CUSTOMER_SERVICE:
+                confirmation_content = """✅ **Müşteri Hizmetleri Modülü Seçildi**
+
+Bu modülde şunları yapabilirsiniz:
+• 📦 Sipariş durumu sorgulama
+• 💳 Ödeme desteği
+• 👤 Müşteri bilgileri
+• 📞 Müşteri desteği
+
+Müşteri hizmetleri sistemi başlatılıyor..."""
+
+            elif module_type == ModuleType.REQUEST:
+                confirmation_content = """✅ **Özellik Talepleri Modülü Seçildi**
+
+Bu modülde şunları yapabilirsiniz:
+• 💡 Yeni özellik önerme
+• 🚀 Geliştirme talepleri
+• 📝 İyileştirme önerileri
+• 🔄 Geri bildirim verme
+
+Özellik talepleri sistemi başlatılıyor..."""
+
+            elif module_type == ModuleType.DOCUMENTS_TRAINING:
+                confirmation_content = """✅ **Dokümantasyon Modülü Seçildi**
+
+Bu modülde şunları yapabilirsiniz:
+• 📚 Kullanım kılavuzlarına erişim
+• 🎓 Eğitim materyalleri
+• 📖 Yardım dokümanları
+• 🎥 Video eğitimler
+
+Dokümantasyon sistemi başlatılıyor..."""
+
+            elif module_type == ModuleType.COMPANY_INFO:
+                confirmation_content = """✅ **Şirket Bilgileri Modülü Seçildi**
+
+Bu modülde şunları yapabilirsiniz:
+• 🏢 Şirket bilgileri
+• 📧 İletişim bilgileri
+• 🌐 Genel bilgiler
+• 📍 Adres ve konum
+
+Şirket bilgileri sistemi başlatılıyor..."""
+
+            else:
+                confirmation_content = """✅ **Modül Seçildi**
+
+Seçiminiz işleme alınıyor..."""
+
+            # Add prompt request to the confirmation
+            confirmation_content += f"""
+
+💬 **Şimdi ne yapmak istediğinizi belirtin:**
+Seçtiğiniz {selected_module['name']} modülü ile ilgili sorularınızı yazabilirsiniz."""
+
+            confirmation_message = AIMessage(content=confirmation_content)
+            
+            return {
+                **state,
+                "messages": messages + [confirmation_message],
+                "workflow_step": "module_confirmed",
+                "confirmed_module": selected_module["module"]
+            }
+            
+        except Exception as e:
+            self.logger.error("Module confirmation failed", error=str(e))
+            return self.error_handler_node(state)
+    
+    def await_user_prompt_node(self, state: State) -> State:
+        """Wait for user to provide their specific request for the selected module"""
+        try:
+            self.logger.debug("Await user prompt node executed")
+            
+            # This node just passes through - the user input will come in the next message
+            # We just store that we're awaiting a prompt
+            return {
+                **state,
+                "workflow_step": "awaiting_user_prompt"
+            }
+            
+        except Exception as e:
+            self.logger.error("Await user prompt failed", error=str(e))
+            return self.error_handler_node(state)
+    
+    def process_module_request_node(self, state: State) -> State:
+        """Process the user's request within the selected module"""
+        try:
+            self.logger.debug("Process module request node executed")
+            
+            messages = state["messages"]
+            confirmed_module = state.get("confirmed_module")
+            user_message = self.extractor.extract_user_prompt(messages)
+            
+            if not confirmed_module:
+                return self.error_handler_node(state)
+            
+            # Process based on selected module
+            if confirmed_module == ModuleType.TEXT2SQL:
+                return self._process_text2sql_request(state, user_message)
+            elif confirmed_module == ModuleType.REPORTING:
+                return self._process_reporting_request(state, user_message)
+            elif confirmed_module == ModuleType.SUPPORT:
+                return self._process_support_request(state, user_message)
+            elif confirmed_module == ModuleType.CUSTOMER_SERVICE:
+                return self._process_customer_service_request(state, user_message)
+            elif confirmed_module == ModuleType.REQUEST:
+                return self._process_feature_request(state, user_message)
+            elif confirmed_module == ModuleType.DOCUMENTS_TRAINING:
+                return self._process_documentation_request(state, user_message)
+            elif confirmed_module == ModuleType.COMPANY_INFO:
+                return self._process_company_info_request(state, user_message)
+            else:
+                return self._process_general_request(state, user_message)
+            
+        except Exception as e:
+            self.logger.error("Process module request failed", error=str(e))
+            return self.error_handler_node(state)
+    
+    def _process_text2sql_request(self, state: State, user_message: str) -> State:
+        """Process Text2SQL requests using the subgraph"""
+        try:
+            self.logger.info("Processing Text2SQL request", request=user_message)
+            
+            # Initialize Text2SQL graph if not done yet
+            self._initialize_text2sql_graph()
+            
+            messages = state["messages"]
+            
+            # Convert State to TestState for Text2SQL graph
+            from src.graphs.text2sql_graph import TestState
+            
+            text2sql_state = {
+                "user_query": user_message,
+                "all_tables": [],
+                "relevant_tables": [],
+                "table_schemas": "",
+                "generated_sql": "",
+                "validated_sql": "",
+                "is_valid": False,
+                "sql_result": "",
+                "is_error": False,
+                "error_message": "",
+                "fixed_sql": "",
+                "debug_info": {
+                    "supervisor_state": state,
+                    "original_user_query": user_message
+                }
+            }
+            
+            # Execute Text2SQL graph
+            compiled_graph = self.text2sql_graph.build_graph()
+            thread_config = {"configurable": {"thread_id": "text2sql_execution"}}
+            result = compiled_graph.invoke(text2sql_state, config=thread_config)
+            
+            # Format result
+            sql_result = result.get("sql_result", "No result")
+            generated_sql = result.get("generated_sql", "")
+            is_error = result.get("is_error", False)
+            
+            if is_error:
+                error_message = result.get("error_message", "Unknown error")
+                content = f"""❌ **SQL Sorgu Hatası**
+
+**Hata:** {error_message}
+
+**Oluşturulan SQL:** 
+```sql
+{generated_sql}
+```
+
+Sorgunuzu daha net bir şekilde ifade edebilir misiniz?"""
+            else:
+                content = f"""✅ **SQL Sorgu Sonucu**
+
+**Oluşturulan SQL:** 
+```sql
+{generated_sql}
+```
+
+**Sonuç:** 
+```
+{sql_result}
+```
+
+SQL sorgunuz başarıyla çalıştırıldı!"""
+
+            response_message = AIMessage(content=content)
+            
+            return {
+                **state,
+                "messages": messages + [response_message],
+                "workflow_step": "request_processed",
+                "sql_result": sql_result,
+                "generated_sql": generated_sql
+            }
+            
+        except Exception as e:
+            self.logger.error("Text2SQL processing failed", error=str(e))
+            error_message = AIMessage(content=f"""❌ **SQL İşleme Hatası**
+
+Veritabanı sorgusu işlenirken bir hata oluştu: {str(e)}
+
+Lütfen sorgunuzu tekrar deneyin.""")
+            
+            return {
+                **state,
+                "messages": state["messages"] + [error_message],
+                "workflow_step": "request_error"
+            }
+    
+    def _process_reporting_request(self, state: State, user_message: str) -> State:
+        """Process reporting requests"""
+        response_message = AIMessage(content=f"""📊 **Raporlama Modülü**
+
+Talebiniz: "{user_message}"
+
+Bu modül henüz geliştirme aşamasındadır. Yakında:
+• Satış raporları
+• Ciro analizleri  
+• Performans grafikleri
+• Özel raporlar
+
+özelliklerini kullanabileceksiniz.""")
+        
+        return {
+            **state,
+            "messages": state["messages"] + [response_message],
+            "workflow_step": "request_processed"
+        }
+    
+    def _process_support_request(self, state: State, user_message: str) -> State:
+        """Process technical support requests"""
+        response_message = AIMessage(content=f"""🛠️ **Teknik Destek Modülü**
+
+Talebiniz: "{user_message}"
+
+Bu modül henüz geliştirme aşamasındadır. Yakında:
+• Sistem sorunları çözümü
+• Kullanım yardımı
+• Hata raporlama
+• Teknik destek
+
+özelliklerini kullanabileceksiniz.""")
+        
+        return {
+            **state,
+            "messages": state["messages"] + [response_message],
+            "workflow_step": "request_processed"
+        }
+    
+    def _process_customer_service_request(self, state: State, user_message: str) -> State:
+        """Process customer service requests"""
+        response_message = AIMessage(content=f"""👥 **Müşteri Hizmetleri Modülü**
+
+Talebiniz: "{user_message}"
+
+Bu modül henüz geliştirme aşamasındadır. Yakında:
+• Sipariş durumu sorgulama
+• Ödeme desteği
+• Müşteri bilgileri
+• Müşteri desteği
+
+özelliklerini kullanabileceksiniz.""")
+        
+        return {
+            **state,
+            "messages": state["messages"] + [response_message],
+            "workflow_step": "request_processed"
+        }
+    
+    def _process_feature_request(self, state: State, user_message: str) -> State:
+        """Process feature requests"""
+        response_message = AIMessage(content=f"""💡 **Özellik Talepleri Modülü**
+
+Talebiniz: "{user_message}"
+
+Bu modül henüz geliştirme aşamasındadır. Yakında:
+• Yeni özellik önerme
+• Geliştirme talepleri
+• İyileştirme önerileri
+• Geri bildirim
+
+özelliklerini kullanabileceksiniz.""")
+        
+        return {
+            **state,
+            "messages": state["messages"] + [response_message],
+            "workflow_step": "request_processed"
+        }
+    
+    def _process_documentation_request(self, state: State, user_message: str) -> State:
+        """Process documentation requests"""
+        response_message = AIMessage(content=f"""📚 **Dokümantasyon Modülü**
+
+Talebiniz: "{user_message}"
+
+Bu modül henüz geliştirme aşamasındadır. Yakında:
+• Kullanım kılavuzları
+• Eğitim materyalleri
+• Yardım dokümanları
+• Video eğitimler
+
+özelliklerini kullanabileceksiniz.""")
+        
+        return {
+            **state,
+            "messages": state["messages"] + [response_message],
+            "workflow_step": "request_processed"
+        }
+    
+    def _process_company_info_request(self, state: State, user_message: str) -> State:
+        """Process company info requests"""
+        response_message = AIMessage(content=f"""🏢 **Şirket Bilgileri Modülü**
+
+Talebiniz: "{user_message}"
+
+Bu modül henüz geliştirme aşamasındadır. Yakında:
+• Şirket bilgileri
+• İletişim bilgileri
+• Genel bilgiler
+• Adres ve konum
+
+özelliklerini kullanabileceksiniz.""")
+        
+        return {
+            **state,
+            "messages": state["messages"] + [response_message],
+            "workflow_step": "request_processed"
+        }
+    
+    def _process_general_request(self, state: State, user_message: str) -> State:
+        """Process general requests"""
+        response_message = AIMessage(content=f"""🔄 **Genel Modül**
+
+Talebiniz: "{user_message}"
+
+Bu istek uygun bir modülde işlenecek.""")
+        
+        return {
+            **state,
+            "messages": state["messages"] + [response_message],
+            "workflow_step": "request_processed"
+        }
     
     def intent_detection_node(self, state: State) -> State:
         """Detect user intent using LLM and rule-based approaches"""
@@ -442,6 +941,10 @@ Ben size aşağıdaki konularda yardımcı olabilir:
             
             messages = state["messages"]
             user_message = self.extractor.extract_user_prompt(messages)
+            
+            # Update loop tracking
+            loop_count = state.get("loop_count", 0) + 1
+            visited_nodes = state.get("visited_nodes", []) + ["intent_detection"]
             
             # Get conversation context
             context = self.extractor.extract_conversation_context(messages)
@@ -468,16 +971,14 @@ Ben size aşağıdaki konularda yardımcı olabilir:
             except Exception as llm_error:
                 self.logger.warning("LLM routing failed, using rule-based", error=str(llm_error))
             
-            # Store decision in state
-            state["routing_decision"] = rule_based_decision.dict()
-            state["workflow_step"] = "intent_detected"
-            
-            self.logger.info("Intent detected", 
-                           target_module=rule_based_decision.target_module,
-                           confidence=rule_based_decision.confidence,
-                           next_action=rule_based_decision.next_action)
-            
-            return state
+            # Store decision and tracking info in state
+            return {
+                **state,
+                "routing_decision": rule_based_decision.dict(),
+                "workflow_step": "intent_detected",
+                "loop_count": loop_count,
+                "visited_nodes": visited_nodes
+            }
             
         except Exception as e:
             self.logger.error("Intent detection failed", error=str(e))
@@ -490,6 +991,10 @@ Ben size aşağıdaki konularda yardımcı olabilir:
             
             messages = state["messages"]
             routing_decision = RoutingDecision(**state.get("routing_decision", {}))
+            
+            # Track clarification attempts
+            clarification_count = state.get("clarification_count", 0) + 1
+            visited_nodes = state.get("visited_nodes", []) + ["clarification"] 
             
             clarification_message = AIMessage(content=f"""🤔 **Anlayabilmek için biraz daha detay gerekiyor**
 
@@ -504,8 +1009,11 @@ Ben size aşağıdaki konularda yardımcı olabilir:
 Lütfen ne yapmak istediğinizi daha açık bir şekilde belirtin.""")
             
             return {
+                **state,
                 "messages": messages + [clarification_message],
-                "workflow_step": "clarification_requested"
+                "workflow_step": "clarification_requested",
+                "clarification_count": clarification_count,
+                "visited_nodes": visited_nodes
             }
             
         except Exception as e:
@@ -575,27 +1083,42 @@ Yukarıdaki konulardan hangisinde yardıma ihtiyacınız var? Lütfen belirtin."
             self.logger.debug("Module router node executed")
             
             messages = state["messages"]
-            routing_decision = RoutingDecision(**state.get("routing_decision", {}))
+            confirmed_module = state.get("confirmed_module")
             
-            if not routing_decision.target_module:
-                self.logger.warning("No target module specified for routing")
-                return self.error_handler_node(state)
+            # Use confirmed_module from the new flow
+            if not confirmed_module:
+                # Fallback to old routing decision if available (backward compatibility)
+                routing_decision_dict = state.get("routing_decision", {})
+                if routing_decision_dict:
+                    routing_decision = RoutingDecision(**routing_decision_dict)
+                    confirmed_module = routing_decision.target_module
+                else:
+                    self.logger.warning("No target module specified for routing")
+                    return self.error_handler_node(state)
             
-            # Create module-specific routing message
-            routing_message = self._create_routing_message(routing_decision)
+            # Create module-specific routing message using confirmed module
+            fake_routing_decision = RoutingDecision(
+                target_module=confirmed_module,
+                confidence=1.0,
+                next_action=NextAction.ROUTE_TO_MODULE,
+                suggested_response="Module selected by user"
+            )
+            routing_message = self._create_routing_message(fake_routing_decision)
             
             # Update state with module context
             updated_state = {
+                **state,
                 "messages": messages + [routing_message],
                 "workflow_step": "routed_to_module",
-                "target_module": routing_decision.target_module.value,
-                "routing_confidence": routing_decision.confidence,
-                "routing_timestamp": datetime.now().isoformat()
+                "target_module": confirmed_module.value,
+                "routing_confidence": 1.0,
+                "routing_timestamp": datetime.now().isoformat(),
+                "redirect_to_text2sql": confirmed_module == ModuleType.TEXT2SQL
             }
             
             self.logger.info("Successfully routed to module", 
-                           module=routing_decision.target_module.value,
-                           confidence=routing_decision.confidence)
+                           module=confirmed_module.value,
+                           confidence=1.0)
             
             return updated_state
             
@@ -643,11 +1166,114 @@ Size nasıl yardımcı olabilirim?""")
                 "workflow_step": "critical_error"
             }
     
+    def daily_chat_node(self, state: State) -> State:
+        """Daily chat format node for casual conversation"""
+        try:
+            self.logger.debug("Daily chat node executed")
+            
+            messages = state["messages"]
+            user_message = self.extractor.extract_user_prompt(messages)
+            
+            # Use custom system prompt if provided
+            system_prompt = self.chat_mode_config.system_prompt or """Sen günlük sohbet formatında konuşan, samimi ve yardımsever bir asistansın. 
+            
+Kullanıcılarla dostane bir dille konuş, emojiler kullan ve resmi ERP işlemlerini de günlük konuşma dilinde açıkla.
+Teknik konuları basit bir şekilde anlat ve kullanıcıya rehberlik et."""
+            
+            # Generate casual response using LLM
+            chat_prompt = ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
+                ("human", f"Kullanıcı mesajı: {user_message}\n\nGünlük sohbet formatında, samimi bir şekilde yanıt ver.")
+            ])
+            
+            chat_chain = chat_prompt | self.llm.get_chat()
+            response = chat_chain.invoke({"user_message": user_message})
+            
+            chat_message = AIMessage(content=f"💬 **Günlük Sohbet Modu**\n\n{response.content}")
+            
+            return {
+                "messages": messages + [chat_message],
+                "workflow_step": "daily_chat_completed",
+                "chat_mode_used": True
+            }
+            
+        except Exception as e:
+            self.logger.error("Daily chat node failed", error=str(e))
+            return self.error_handler_node(state)
+    
+    def _determine_welcome_route(self, state: State) -> str:
+        """Determine if we should go to daily chat or module selection"""
+        try:
+            messages = state["messages"]
+            
+            # Simple heuristic: if it's a casual greeting or general chat, use daily chat
+            if len(messages) > 0:
+                last_message = messages[-1].content.lower()
+                casual_patterns = [
+                    "merhaba", "selam", "nasılsın", "ne haber", "günaydın", "iyi akşamlar",
+                    "hello", "hi", "how are you", "what's up", "good morning", "good evening"
+                ]
+                
+                if any(pattern in last_message for pattern in casual_patterns):
+                    self.logger.debug("Routing to daily chat for casual greeting")
+                    return "daily_chat"
+            
+            # For business queries, go straight to module selection
+            self.logger.debug("Routing to module selection for business query")
+            return "module_selection"
+            
+        except Exception as e:
+            self.logger.error("Failed to determine welcome route", error=str(e))
+            return "module_selection"
+    
+    def determine_module_route(self, state: State) -> str:
+        """Determine which module to route to based on confirmed selection"""
+        try:
+            confirmed_module = state.get("confirmed_module")
+            workflow_step = state.get("workflow_step", "")
+            
+            # Handle invalid selection
+            if workflow_step == "awaiting_module_selection":
+                self.logger.debug("Routing back to show options for invalid selection")
+                return "show_options"
+            
+            if not confirmed_module:
+                self.logger.warning("No confirmed module found, routing to error handler")
+                return "error_handler"
+            
+            # Route based on confirmed module
+            if confirmed_module == ModuleType.TEXT2SQL:
+                self.logger.debug("Routing to Text2SQL subgraph")
+                return "text2sql_subgraph"
+            else:
+                self.logger.debug("Routing to module router", module=confirmed_module)
+                return "module_router"
+                
+        except Exception as e:
+            self.logger.error("Failed to determine module route", error=str(e))
+            return "error_handler"
+    
     def determine_next_node(self, state: State) -> str:
         """Determine the next node based on current state and routing decision"""
         try:
             workflow_step = state.get("workflow_step", "")
             routing_decision_dict = state.get("routing_decision", {})
+            
+            # Check for loop prevention
+            loop_count = state.get("loop_count", 0)
+            visited_nodes = state.get("visited_nodes", [])
+            
+            # Prevent infinite loops
+            if loop_count > 5:
+                self.logger.warning("Loop limit reached, ending conversation", loop_count=loop_count)
+                return "end"
+            
+            # Prevent cycling through the same nodes repeatedly
+            if len(visited_nodes) > 3:
+                recent_nodes = visited_nodes[-3:]
+                if len(set(recent_nodes)) == 1:  # Same node visited 3 times in a row
+                    self.logger.warning("Detected cycling, ending conversation", recent_nodes=recent_nodes)
+                    return "end"
             
             if not routing_decision_dict:
                 self.logger.warning("No routing decision found, showing options")
@@ -657,10 +1283,20 @@ Size nasıl yardımcı olabilirim?""")
             
             # Decision logic based on next_action
             if routing_decision.next_action == NextAction.ROUTE_TO_MODULE:
-                self.logger.debug("Routing to module", module=routing_decision.target_module)
-                return "module_router"
+                # Check if it's a Text2SQL request
+                if routing_decision.target_module == ModuleType.TEXT2SQL:
+                    self.logger.debug("Routing to Text2SQL subgraph")
+                    return "text2sql_subgraph"
+                else:
+                    self.logger.debug("Routing to module", module=routing_decision.target_module)
+                    return "module_router"
             
             elif routing_decision.next_action == NextAction.CLARIFY_INTENT:
+                # Prevent too many clarification attempts
+                clarification_count = state.get("clarification_count", 0)
+                if clarification_count >= 2:
+                    self.logger.warning("Too many clarification attempts, showing options instead")
+                    return "show_options"
                 self.logger.debug("Requesting clarification")
                 return "clarification"
             
@@ -706,6 +1342,7 @@ SQL sorgu sistemi başlatılıyor...
 • Veritabanı bağlantısı kontrol ediliyor
 • Tablo şemaları yükleniyor
 • Sorgu motoru hazırlanıyor
+• Dinamik raporlama desteği etkinleştiriliyor
 
 Sorgunuz işleme alınıyor..."""
 
@@ -766,6 +1403,138 @@ Genel destek sistemi başlatılıyor...
 Talebiniz uygun departmana yönlendiriliyor..."""
 
         return AIMessage(content=content)
+    
+    def _initialize_text2sql_graph(self):
+        """Lazy initialization of Text2SQL graph"""
+        if not self._text2sql_initialized:
+            from src.graphs.text2sql_graph import Text2SQLGraph
+            from src.services.config_loader import ConfigLoader
+            from langchain_community.utilities import SQLDatabase
+            
+            config = ConfigLoader.load_config("config/text2sql_config.yaml")
+            db = SQLDatabase.from_uri(config.database.uri)
+            self.text2sql_graph = Text2SQLGraph(self.llm, db=db)
+            self._text2sql_initialized = True
+            self.logger.debug("Text2SQL graph initialized lazily")
+
+    def text2sql_state_converter_node(self, state: State) -> Dict[str, Any]:
+        """Convert supervisor State to Text2SQL TestState"""
+        try:
+            self.logger.debug("Converting state for Text2SQL subgraph")
+            
+            messages = state["messages"]
+            user_message = self.extractor.extract_user_prompt(messages)
+            
+            # Convert State to TestState for Text2SQL graph
+            from src.graphs.text2sql_graph import TestState
+            
+            # Create TestState with user query and debug info
+            text2sql_state = {
+                "user_query": user_message,
+                "all_tables": [],
+                "relevant_tables": [],
+                "table_schemas": "",
+                "generated_sql": "",
+                "validated_sql": "",
+                "is_valid": False,
+                "sql_result": "",
+                "is_error": False,
+                "error_message": "",
+                "fixed_sql": "",
+                # Add debug tracking
+                "debug_info": {
+                    "supervisor_routing": state.get("routing_decision", {}),
+                    "confidence_score": state.get("routing_confidence", 0.0),
+                    "workflow_step": state.get("workflow_step", ""),
+                    "original_user_query": user_message,
+                    "session_id": state.get("session_id", "unknown"),
+                    "supervisor_state": state  # Keep original state for response conversion
+                }
+            }
+            
+            self.logger.debug("State converted for Text2SQL subgraph")
+            return text2sql_state
+            
+        except Exception as e:
+            self.logger.error("Failed to convert state for Text2SQL", error=str(e))
+            return {
+                "user_query": "ERROR: State conversion failed",
+                "is_error": True,
+                "error_message": str(e)
+            }
+
+    def text2sql_response_node(self, text2sql_result: Dict[str, Any]) -> State:
+        """Convert Text2SQL result back to supervisor State"""
+        try:
+            self.logger.debug("Converting Text2SQL result back to supervisor state")
+            
+            # Get original supervisor state from debug info
+            original_state = text2sql_result.get("debug_info", {}).get("supervisor_state", {})
+            messages = original_state.get("messages", [])
+            
+            # Format the result for display
+            sql_result = text2sql_result.get("sql_result", "No result")
+            generated_sql = text2sql_result.get("generated_sql", "")
+            is_error = text2sql_result.get("is_error", False)
+            
+            if is_error:
+                error_message = text2sql_result.get("error_message", "Unknown error")
+                content = f"""❌ **SQL Sorgu Hatası**
+
+**Hata:** {error_message}
+
+**Oluşturulan SQL:** 
+```sql
+{generated_sql}
+```
+
+Lütfen sorgunuzu daha net bir şekilde belirtin."""
+            else:
+                content = f"""✅ **SQL Sorgu Sonucu**
+
+**Oluşturulan SQL:** 
+```sql
+{generated_sql}
+```
+
+**Sonuç:** 
+```
+{sql_result}
+```"""
+            
+            response_message = AIMessage(content=content)
+            
+            return {
+                **original_state,
+                "messages": messages + [response_message],
+                "workflow_step": "text2sql_completed",
+                "sql_result": sql_result,
+                "generated_sql": generated_sql,
+                "text2sql_debug": {
+                    "execution_time": "calculated",
+                    "tables_used": text2sql_result.get("relevant_tables", []),
+                    "sql_validation": text2sql_result.get("is_valid", False),
+                    "error_occurred": is_error
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error("Failed to convert Text2SQL result", error=str(e))
+            error_message = AIMessage(content=f"""❌ **Text2SQL Hata**
+
+Veritabanı sorgusu işlenirken bir hata oluştu: {str(e)}
+
+Lütfen sorgunuzu tekrar deneyin veya farklı bir şekilde ifade edin.""")
+            
+            original_state = text2sql_result.get("debug_info", {}).get("supervisor_state", {})
+            messages = original_state.get("messages", [])
+            
+            return {
+                **original_state,
+                "messages": messages + [error_message],
+                "workflow_step": "text2sql_error"
+            }
+
 
 # Unit Tests for Supervisor Graph
 class TestSupervisorGraph:

@@ -93,7 +93,20 @@ class ERPChatbotController:
             module_type = self._determine_module(chatbot_state)
             self.logger.debug("Module determined", module_type=module_type.value)
             
-            # Process with appropriate module
+            # Check if supervisor has already determined target module
+            target_module = chatbot_state.get("target_module", None)
+            redirect_to_text2sql = chatbot_state.get("redirect_to_text2sql", False)
+            
+            # Use supervisor's decision if available
+            if redirect_to_text2sql or target_module == "text2sql":
+                if ModuleType.TEXT2SQL.value in self.modules:
+                    self.logger.info("Redirecting to text2sql_graph as requested by supervisor")
+                    return self.modules[ModuleType.TEXT2SQL.value].process_request(chatbot_state)
+                else:
+                    self.logger.warning("Text2SQL module not available, falling back to general")
+                    return self._handle_general_request(chatbot_state)
+            
+            # Process with appropriate module based on intent detection
             if module_type == ModuleType.TEXT2SQL and ModuleType.TEXT2SQL.value in self.modules:
                 return self.modules[ModuleType.TEXT2SQL.value].process_request(chatbot_state)
             elif module_type == ModuleType.CUSTOMER_SERVICE and ModuleType.CUSTOMER_SERVICE.value in self.modules:
@@ -115,6 +128,9 @@ class ERPChatbotController:
             # Map intents to modules
             intent_module_mapping = {
                 "sql_query": ModuleType.TEXT2SQL,
+                "database_query": ModuleType.TEXT2SQL,
+                "dynamic_reporting": ModuleType.TEXT2SQL,
+                "text2sql": ModuleType.TEXT2SQL,
                 "customer_service": ModuleType.CUSTOMER_SERVICE,
                 "order_status": ModuleType.CUSTOMER_SERVICE,
                 "payment_support": ModuleType.CUSTOMER_SERVICE,

@@ -41,6 +41,13 @@ def main_graph_with_tools():
     return graph("main_graph_with_tools").build_graph()
 
 
-def supervisor_graph():
-    return graph("supervisor").build_graph()
+def supervisor_graph(chat_mode_config=None):
+    from src.graphs.supervisor_graph import SupervisorGraph, ChatModeConfig
+    config = ConfigLoader.load_config()
+    
+    if chat_mode_config is None:
+        chat_mode_config = ChatModeConfig()
+    
+    llm = LLM(model=config.llm.model, temperature=config.llm.temperature, api_key=config.llm.api_key)
+    return SupervisorGraph(llm=llm, chat_mode_config=chat_mode_config).build_graph()
 

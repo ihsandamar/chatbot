@@ -78,6 +78,7 @@ class TestState(BaseState):
     is_error: NotRequired[bool]  # Whether there was an execution error
     error_message: NotRequired[str]  # Error message if execution failed
     fixed_sql: NotRequired[str]  # Fixed SQL after error correction
+    debug_info: NotRequired[Dict[str, Any]]  # Debug information for LangGraph Studio
 
 class SQLExecutionRouter:
     """Router to decide whether to fix SQL or end the flow"""
