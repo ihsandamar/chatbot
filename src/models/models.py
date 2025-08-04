@@ -5,7 +5,6 @@ from langgraph.graph.message import add_messages, AnyMessage
 # Define the state schema 
 class State(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
-    tool_calls: NotRequired[List[dict]]
 
 
 
