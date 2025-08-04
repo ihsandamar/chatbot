@@ -1,4 +1,4 @@
-# src/graphs/text2sql_graph.py - LangGraph Native with Runnable Agents
+# src/graphs/test_graph.py - Enhanced Test Graph with Table Selection
 from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Literal, Optional, TypedDict
 from dataclasses import dataclass
@@ -8,6 +8,8 @@ from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 from langchain_core.runnables import Runnable
+from langchain_core.output_parsers.openai_tools import PydanticToolsParser
+from pydantic import BaseModel, Field
 from typing_extensions import NotRequired
 
 from src.graphs.base_graph import BaseGraph
@@ -22,123 +24,77 @@ from src.services.config_loader import ConfigLoader
 # Load configuration
 config = ConfigLoader.load_config("config/text2sql_config.yaml")
 
+
+
 # ================================
-# DYNAMIC AI TABLE ANALYZER TOOL
+# QUERY PARAMETER MODELS
 # ================================
-@tool
-def analyze_user_query_for_tables(user_query: str, all_tables: str) -> str:
-    """AI tool to dynamically analyze user query and select most relevant database tables."""
-    from langchain_openai import ChatOpenAI
-    from langchain_core.prompts import ChatPromptTemplate
-    
-    tables_list = [t.strip() for t in all_tables.split(',') if t.strip()]
-    
-    try:
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0, api_key=config.llm.api_key)
-        
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a database expert. Analyze the user query and select the most relevant tables.
+class FilterCondition(BaseModel):
+    """Filter condition for SQL query"""
+    field: str = Field(description="Field name to filter on")
+    operator: str = Field(description="Filter operator (=, >, <, >=, <=, LIKE, IN, etc.)")
+    value: str = Field(description="Filter value")
 
-INSTRUCTIONS:
-- Understand the user's intent and data needs
-- Select 3-8 most relevant tables that contain the requested data
-- Consider table relationships and dependencies
-- Focus on tables that directly relate to the user's question
-- Return ONLY table names separated by commas, no explanations
+class OrderBy(BaseModel):
+    """Order by clause for SQL query"""
+    field: str = Field(description="Field name to order by")
+    direction: str = Field(default="ASC", description="Order direction (ASC or DESC)")
 
-EXAMPLES:
-- "Products data" → Tables with "Product" in name
-- "Customer information" → Tables with "Customer" related data
-- "Sales report" → Tables related to sales, orders, transactions
-- "BOM listing" → Tables related to Bill of Materials"""),
-            ("human", f"""User Query: {user_query}
+class QueryParameters(BaseModel):
+    """SQL SELECT query parameters extracted from user prompt"""
+    select_fields: List[str] = Field(description="Fields to select (required)")
+    group_by_fields: List[str] = Field(default=[], description="Fields to group by")
+    order_by: List[OrderBy] = Field(default=[], description="Order by clauses")
+    filters: List[FilterCondition] = Field(default=[], description="Filter conditions")
+    limit: Optional[int] = Field(default=None, description="Limit number of results")
 
-Available Tables: {all_tables}
-
-Select the most relevant tables (comma separated):""")
-        ])
-        
-        response = llm.invoke(prompt.format_messages())
-        selected = [t.strip() for t in response.content.split(',') if t.strip()]
-        valid_selected = [t for t in selected if t in tables_list]
-        
-        result = ', '.join(valid_selected[:8]) if valid_selected else ', '.join(tables_list[:5])
-        print(f"[AI ANALYSIS] Query: {user_query[:50]} → Tables: {result}")
-        return result
-        
-    except Exception as e:
-        print(f"[AI ANALYSIS ERROR] {e}")
-        return ', '.join(tables_list[:5])
+# ================================
+# TABLE MODEL
+# ================================
+class Table(BaseModel):
+    """Table in SQL database with detailed schema information."""
+    name: str = Field(description="Name of table in SQL database.")
+    columns: List[str] = Field(default=[], description="Column definitions")
+    relations: List[str] = Field(default=[], description="Table relations") 
+    schema: Optional[str] = Field(default="", description="CREATE TABLE statement")
 
 # ================================
 # STATE DEFINITION
 # ================================
-@dataclass
-class UserParameters:
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    group_by_fields: List[str] = None
-    order_by_fields: List[str] = None
-    limit: int = 100
-    filters: Dict[str, Any] = None
+class BaseState(TypedDict):
+    pass
+
+class TestState(BaseState):
+    """TestState for the enhanced test graph"""
+    user_query: NotRequired[str]  # User's question
+    all_tables: NotRequired[List[str]]  # All database tables
+    relevant_tables: NotRequired[List[Table]]  # Tables relevant to the user query with schema
+    table_schemas: NotRequired[str]  # Raw schema information
+    query_parameters: NotRequired[QueryParameters]  # Extracted SQL query parameters
+    generated_sql: NotRequired[str]  # Generated SQL query
+    validated_sql: NotRequired[str]  # Validated SQL query
+    is_valid: NotRequired[bool]  # Whether SQL passed validation
+    sql_result: NotRequired[str]  # SQL execution result
+    is_error: NotRequired[bool]  # Whether there was an execution error
+    error_message: NotRequired[str]  # Error message if execution failed
+    fixed_sql: NotRequired[str]  # Fixed SQL after error correction
+
+class SQLExecutionRouter:
+    """Router to decide whether to fix SQL or end the flow"""
     
-    def __post_init__(self):
-        if self.group_by_fields is None:
-            self.group_by_fields = []
-        if self.filters is None:
-            self.filters = {}
-
-@dataclass
-class ErrorInfo:
-    error_message: str = ""
-    retry_count: int = 0
-    max_retries: int = 3
-    last_failed_query: str = ""
-
-class Text2SQLState(TypedDict):
-    messages: List[Any]
-    report_module: NotRequired[Literal["masterreport", "accounting", "dynamicreport"]]
-    user_parameters: NotRequired[UserParameters]
-    all_tables: NotRequired[List[str]]
-    relevant_tables: NotRequired[List[str]]
-    table_schemas: NotRequired[str]
-    generated_sql: NotRequired[str]
-    query_result: NotRequired[str]
-    error_info: NotRequired[ErrorInfo]
-    schema_loaded: NotRequired[bool]
-    tables_listed: NotRequired[bool]
-
-# ================================
-# UTILITY CLASSES
-# ================================
-class StateManager:
-    @staticmethod
-    def init_state(state: Text2SQLState) -> Text2SQLState:
-        defaults = {
-            "user_parameters": UserParameters(),
-            "error_info": ErrorInfo(),
-            "schema_loaded": False,
-            "tables_listed": False,
-            "all_tables": [],
-            "relevant_tables": [],
-            "table_schemas": ""
-        }
-        for key, value in defaults.items():
-            if key not in state:
-                state[key] = value
-        return state
+    def __init__(self):
+        self.logger = log.get(module="test_graph", component="sql_router")
     
-    @staticmethod
-    def get_user_question(messages: List) -> str:
-        for msg in reversed(messages):
-            if isinstance(msg, str):
-                return msg
-            elif hasattr(msg, 'type') and msg.type == 'human' and hasattr(msg, 'content'):
-                if isinstance(msg.content, str):
-                    return msg.content
-        if messages and isinstance(messages[0], str):
-            return messages[0]
-        return "Soru bulunamadı"
+    def route(self, state: TestState) -> str:
+        """Route based on SQL execution result"""
+        is_error = state.get("is_error", False)
+        
+        if is_error:
+            self.logger.info("SQL execution failed, routing to fix_sql")
+            return "fix_sql"
+        else:
+            self.logger.info("SQL execution successful, routing to end")
+            return "end"
 
 # ================================
 # BASE AGENT - LangGraph Runnable Native
@@ -151,10 +107,10 @@ class BaseAgent(Runnable, ABC):
         self.name = name
         self.tools = tools or []
         self.tools_dict = {tool.name: tool for tool in self.tools}
-        self.logger = log.get(module="text2sql", agent=name)
+        self.logger = log.get(module="test_graph", agent=name)
     
     @abstractmethod
-    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
+    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
         """LangGraph Runnable invoke method"""
         pass
     
@@ -166,7 +122,7 @@ class BaseAgent(Runnable, ABC):
         
         try:
             result = tool.invoke(args)
-            self.logger.info("Tool executed successfully", tool=tool_name, args=str(args)[:100])
+            self.logger.info("Tool executed successfully", tool=tool_name)
             return result
         except Exception as e:
             self.logger.error("Tool execution failed", tool=tool_name, error=str(e))
@@ -176,17 +132,31 @@ class BaseAgent(Runnable, ABC):
 # AGENT IMPLEMENTATIONS
 # ================================
 class InitializationAgent(BaseAgent):
-    """State initialization agent"""
+    """Simple initialization agent"""
     
     def __init__(self):
         super().__init__("InitializationAgent", tools=[])
     
-    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
-        self.logger.info("Initializing Text2SQL state")
-        state = StateManager.init_state(state)
-        user_question = StateManager.get_user_question(state["messages"])
-        self.logger.info("User question received", question=user_question[:100])
-        return {"messages": state["messages"]}
+    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+        self.logger.info("Initializing TestGraph state")
+        
+        # Set a sample user query if not present
+        user_query = state.get("user_query", "Show me all products and their categories")
+        
+        return {
+            "user_query": user_query,
+            "all_tables": [],
+            "relevant_tables": [],  # List of Table objects
+            "table_schemas": "",
+            "query_parameters": QueryParameters(select_fields=[]),
+            "generated_sql": "",
+            "validated_sql": "",
+            "is_valid": False,
+            "sql_result": "",
+            "is_error": False,
+            "error_message": "",
+            "fixed_sql": ""
+        }
 
 class TableListingAgent(BaseAgent):
     """Database table listing agent"""
@@ -196,9 +166,8 @@ class TableListingAgent(BaseAgent):
         list_tools = [t for t in tools if t.name == "sql_db_list_tables"]
         super().__init__("TableListingAgent", tools=list_tools)
     
-    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
+    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
         self.logger.info("Listing database tables")
-        messages = state["messages"]
         
         try:
             # Execute list tables tool
@@ -210,248 +179,722 @@ class TableListingAgent(BaseAgent):
             
             self.logger.info("Tables listed successfully", count=len(all_tables))
             
-            return {
-                "messages": messages + [AIMessage(content=f"Found {len(all_tables)} tables in database")],
-                "all_tables": all_tables,
-                "tables_listed": True
-            }
+            return {"all_tables": all_tables}
+            
         except Exception as e:
             self.logger.error("Failed to list tables", error=str(e))
-            return {"messages": messages + [AIMessage(content=f"Error listing tables: {str(e)}")]}
+            return {"all_tables": []}
 
-class SchemaAnalysisAgent(BaseAgent):
-    """AI-driven schema analysis agent"""
+class RelevantTablesAgent(BaseAgent):
+    """Agent to find relevant tables using LLM with tool calling (like in the document)"""
     
-    def __init__(self, tools: List):
-        # Filter only the AI analysis tool
-        analysis_tools = [t for t in tools if t.name == "analyze_user_query_for_tables"]
-        super().__init__("SchemaAnalysisAgent", tools=analysis_tools)
+    def __init__(self, llm):
+        super().__init__("RelevantTablesAgent", tools=[])
+        self.llm = llm
+        self._setup_table_selection_chain()
     
-    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
-        self.logger.info("Analyzing user query for relevant tables")
-        messages = state["messages"]
+    def _setup_table_selection_chain(self):
+        """Setup the table selection chain based on the document approach"""
+        # Create the prompt template - Much more inclusive
+        self.system_prompt = """You are a database expert helping to identify ALL relevant tables for a query.
+
+Available tables:
+{table_names}
+
+CRITICAL RULES:
+1. **INCLUDE ALL RELATED TABLES** - Don't just pick the obvious ones
+2. **THINK ABOUT RELATIONSHIPS** - If query mentions categories and products, include ALL related tables:
+   - Main tables (Products, Categories)
+   - Junction/bridge tables (ProductCategories)  
+   - Lookup tables that might be needed
+3. **BE EXTREMELY INCLUSIVE** - It's better to include too many than miss critical ones
+4. **CONSIDER JOINS** - Think about what tables you'd need to JOIN to answer the query
+5. **INCLUDE SUPPORTING TABLES** - Any table that might contain referenced data
+
+For the user's query, return ALL tables that could possibly be relevant, including:
+- Primary tables mentioned in the query
+- Bridge/junction tables for many-to-many relationships
+- Lookup tables with names/descriptions
+- Any table that might be involved in JOINs
+
+Example: If query asks for "product names by category", include:
+- Products (main table)
+- Categories (lookup table) 
+- ProductCategories (bridge table)
+- Any other product-related tables
+
+Be VERY generous in your selection - missing a table is worse than including an extra one."""
+
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", self.system_prompt),
+            ("human", "{input}"),
+        ])
+        
+        # Bind tools to LLM
+        self.llm_with_tools = self.llm.bind_tools([Table])
+        self.output_parser = PydanticToolsParser(tools=[Table])
+        
+        # Create the chain
+        self.table_chain = self.prompt | self.llm_with_tools | self.output_parser
+    
+    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+        self.logger.info("Finding relevant tables using LLM")
+        
         all_tables = state.get("all_tables", [])
+        user_query = state.get("user_query", "")
         
         if not all_tables:
-            return {"messages": messages + [AIMessage(content="No tables available for analysis")]}
+            self.logger.warning("No tables found in state")
+            return {"relevant_tables": []}
         
-        user_question = StateManager.get_user_question(messages)
+        if not user_query:
+            self.logger.warning("No user query found in state")
+            return {"relevant_tables": []}
         
         try:
-            # Execute AI analysis tool
-            result = self.execute_tool("analyze_user_query_for_tables", {
-                "user_query": user_question,
-                "all_tables": ", ".join(all_tables)
+            # Prepare table names string
+            table_names = "\n".join(all_tables)
+            
+            # Invoke the chain
+            result = self.table_chain.invoke({
+                "table_names": table_names,
+                "input": user_query
             })
             
-            # Parse selected tables
-            selected_tables = [t.strip() for t in str(result).split(',') if t.strip()]
+            # Extract table names from result and filter against actual tables
+            suggested_tables = [table.name for table in result if isinstance(table, Table)]
             
-            self.logger.info("AI analysis completed", 
-                           user_question=user_question[:50],
-                           selected_count=len(selected_tables),
-                           selected_tables=selected_tables)
+            # CRITICAL FIX: Only include tables that actually exist in all_tables
+            valid_tables = []
+            for suggested_table in suggested_tables:
+                if suggested_table in all_tables:
+                    valid_tables.append(suggested_table)
+                else:
+                    self.logger.warning("LLM suggested non-existent table", 
+                                      suggested=suggested_table, 
+                                      available=len(all_tables))
             
-            return {
-                "messages": messages + [AIMessage(content=f"AI selected {len(selected_tables)} relevant tables: {', '.join(selected_tables)}")],
-                "relevant_tables": selected_tables
-            }
+            # Convert to Table objects with empty schema initially
+            relevant_tables = [
+                Table(name=table_name, columns=[], relations=[], schema="") 
+                for table_name in valid_tables
+            ]
+            
+            self.logger.info("Relevant tables found and filtered", 
+                           suggested_count=len(suggested_tables),
+                           valid_count=len(relevant_tables), 
+                           tables=[t.name for t in relevant_tables])
+            
+            return {"relevant_tables": relevant_tables}
+            
         except Exception as e:
-            self.logger.error("AI analysis failed", error=str(e))
-            # Fallback: use first 5 tables
-            fallback_tables = all_tables[:5]
-            return {
-                "messages": messages + [AIMessage(content=f"Using fallback tables: {', '.join(fallback_tables)}")],
-                "relevant_tables": fallback_tables
-            }
+            self.logger.error("Failed to find relevant tables", error=str(e))
+            # Fallback: return first 3 tables as Table objects
+            fallback_table_names = all_tables[:3] if len(all_tables) > 3 else all_tables
+            fallback_tables = [
+                Table(name=name, columns=[], relations=[], schema="") 
+                for name in fallback_table_names
+            ]
+            self.logger.info("Using fallback table selection", tables=[t.name for t in fallback_tables])
+            return {"relevant_tables": fallback_tables}
 
-class SchemaRetrievalAgent(BaseAgent):
-    """Database schema retrieval agent"""
+class SchemaAgent(BaseAgent):
+    """Agent to get schema for relevant tables and populate Table objects"""
     
     def __init__(self, tools: List):
-        # Filter only the schema tool
+        # Filter only the sql_db_schema tool
         schema_tools = [t for t in tools if t.name == "sql_db_schema"]
-        super().__init__("SchemaRetrievalAgent", tools=schema_tools)
+        super().__init__("SchemaAgent", tools=schema_tools)
     
-    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
-        self.logger.info("Retrieving schema for selected tables")
-        messages = state["messages"]
+    def _parse_schema_to_table_object(self, table_obj: Table, raw_schema: str) -> Table:
+        """Parse raw schema and populate Table object"""
+        try:
+            # Store full schema
+            table_obj.schema = raw_schema
+            
+            # Simple parsing for columns (basic implementation)
+            lines = raw_schema.split('\n')
+            columns = []
+            relations = []
+            
+            for line in lines:
+                line = line.strip()
+                # Look for column definitions (starts with [ and contains column info)
+                if line.startswith('[') and '] ' in line and not line.startswith('CONSTRAINT'):
+                    columns.append(line)
+                # Look for foreign key constraints
+                elif 'FOREIGN KEY' in line.upper() or 'REFERENCES' in line.upper():
+                    relations.append(line)
+            
+            table_obj.columns = columns
+            table_obj.relations = relations
+            
+            self.logger.info("Schema parsed for table", 
+                           table=table_obj.name, 
+                           columns_count=len(columns),
+                           relations_count=len(relations))
+            
+            return table_obj
+            
+        except Exception as e:
+            self.logger.error("Failed to parse schema", table=table_obj.name, error=str(e))
+            # Keep original schema at least
+            table_obj.schema = raw_schema
+            return table_obj
+    
+    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+        self.logger.info("Getting schema for relevant tables")
+        
         relevant_tables = state.get("relevant_tables", [])
         
         if not relevant_tables:
-            return {"messages": messages + [AIMessage(content="No relevant tables found for schema retrieval")]}
+            self.logger.warning("No relevant tables found, skipping schema retrieval")
+            return {"relevant_tables": []}
         
         try:
-            # Execute schema tool
-            result = self.execute_tool("sql_db_schema", {"table_names": ", ".join(relevant_tables)})
+            # Get table names for schema query
+            table_names = ", ".join([table.name for table in relevant_tables])
             
-            self.logger.info("Schema retrieved successfully", 
-                           tables=relevant_tables,
-                           schema_length=len(str(result)))
+            # Execute schema tool
+            raw_schema = self.execute_tool("sql_db_schema", {"table_names": table_names})
+            
+            # Parse schema and update Table objects
+            updated_tables = []
+            
+            # Split schema by table (simple approach - each CREATE TABLE section)
+            schema_text = str(raw_schema)
+            
+            for table_obj in relevant_tables:
+                # Find this table's schema in the raw result
+                table_schema_start = schema_text.find(f"CREATE TABLE {table_obj.name}")
+                if table_schema_start == -1:
+                    table_schema_start = schema_text.find(f"CREATE TABLE [{table_obj.name}]")
+                
+                if table_schema_start != -1:
+                    # Find end of this table's schema
+                    next_create = schema_text.find("CREATE TABLE", table_schema_start + 1)
+                    if next_create != -1:
+                        table_schema = schema_text[table_schema_start:next_create].strip()
+                    else:
+                        table_schema = schema_text[table_schema_start:].strip()
+                    
+                    # Parse and update the table object
+                    updated_table = self._parse_schema_to_table_object(table_obj, table_schema)
+                    updated_tables.append(updated_table)
+                else:
+                    # Table schema not found, keep original
+                    self.logger.warning("Schema not found for table", table=table_obj.name)
+                    updated_tables.append(table_obj)
+            
+            self.logger.info("Schema populated for tables", 
+                           count=len(updated_tables))
             
             return {
-                "messages": messages + [AIMessage(content=f"Schema loaded for {len(relevant_tables)} tables")],
-                "table_schemas": str(result),
-                "schema_loaded": True
+                "relevant_tables": updated_tables,
+                "table_schemas": str(raw_schema)
             }
+            
         except Exception as e:
-            self.logger.error("Schema retrieval failed", error=str(e))
-            return {"messages": messages + [AIMessage(content=f"Error retrieving schema: {str(e)}")]}
+            self.logger.error("Failed to get schema", error=str(e))
+            return {"relevant_tables": relevant_tables, "table_schemas": ""}
 
-class QueryGenerationAgent(BaseAgent):
-    """SQL query generation and execution agent"""
+class QueryParameterAgent(BaseAgent):
+    """Agent to extract SQL query parameters from user prompt"""
     
-    def __init__(self, llm, tools: List):
-        # Filter only the SQL execution tool
-        sql_tools = [t for t in tools if t.name == "db_query_tool"]
-        super().__init__("QueryGenerationAgent", tools=sql_tools)
+    def __init__(self, llm):
+        super().__init__("QueryParameterAgent", tools=[])
         self.llm = llm
-        self._setup_model()
+        self._setup_parameter_extraction_chain()
     
-    def _setup_model(self):
-        self.query_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a MSSQL expert. Generate and execute SQL queries based on the provided schema.
+    def _setup_parameter_extraction_chain(self):
+        """Setup the parameter extraction chain using LLM with tool calling"""
+        
+        self.system_prompt = """You are a SQL query parameter extraction expert. 
+Analyze the user's natural language query and extract the following SQL SELECT parameters:
 
-INSTRUCTIONS:
-- Use EXACT table and column names from the schema
-- Generate simple, working SQL queries first
-- Apply user parameters for filtering and limiting
-- Focus on the user's specific request
+1. **select_fields** (REQUIRED): Which columns/fields should be selected
+2. **group_by_fields** (OPTIONAL): Which fields to group by  
+3. **order_by** (OPTIONAL): Which fields to order by and direction (ASC/DESC)
+4. **filters** (OPTIONAL): Filter conditions with field, operator, and value
+5. **limit** (OPTIONAL): Maximum number of results
 
-The schema and user parameters are provided in the conversation."""),
-            ("placeholder", "{messages}")
+Available table schemas:
+{table_schemas}
+
+Common SQL operators for filters: =, >, <, >=, <=, LIKE, IN, BETWEEN
+
+Extract parameters based ONLY on what the user explicitly requests. Don't assume anything not mentioned.
+
+Use ONLY the available column names from the table schemas provided above.
+"""
+
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", self.system_prompt),
+            ("human", "User Query: {user_query}\n\nExtract the SQL parameters from this query."),
         ])
         
-        self.query_model = self.query_prompt | self.llm.bind_tools(
-            self.tools, tool_choice="required"
-        )
+        # Bind tools to LLM
+        self.llm_with_tools = self.llm.bind_tools([QueryParameters])
+        self.output_parser = PydanticToolsParser(tools=[QueryParameters])
+        
+        # Create the chain
+        self.parameter_chain = self.prompt | self.llm_with_tools | self.output_parser
     
-    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
-        self.logger.info("Generating and executing SQL query")
-        messages = state["messages"]
-        user_parameters = state.get("user_parameters", UserParameters())
+    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+        self.logger.info("Extracting query parameters from user prompt")
         
-        # Convert dict to UserParameters if needed
-        if isinstance(user_parameters, dict):
-            user_parameters = UserParameters(**user_parameters)
+        user_query = state.get("user_query", "")
+        relevant_tables = state.get("relevant_tables", [])
         
-        # Check if schema is loaded
-        if not state.get("schema_loaded", False):
-            return {"messages": messages + [AIMessage(content="Schema not loaded, cannot generate query")]}
+        if not user_query:
+            self.logger.error("No user query found in state")
+            return {"query_parameters": QueryParameters(select_fields=[])}
         
-        # Add parameter context
-        param_context = f"""
-User Parameters:
-- Limit: {user_parameters.limit}
-- Group By: {', '.join(user_parameters.group_by_fields) if user_parameters.group_by_fields else 'None'}
-- Order By: {', '.join(user_parameters.order_by_fields) if user_parameters.order_by_fields else 'None'}
-- Filters: {user_parameters.filters if user_parameters.filters else 'None'}
-
-Please generate and execute a SQL query based on the schema and user request.
-"""
-        
-        enhanced_messages = messages + [HumanMessage(content=param_context)]
+        # Prepare table schemas for context
+        table_schemas_text = ""
+        if relevant_tables:
+            for table in relevant_tables:
+                table_schemas_text += f"\nTable: {table.name}\n"
+                if table.columns:
+                    table_schemas_text += "Columns:\n"
+                    for col in table.columns[:10]:  # Limit to first 10 columns for brevity
+                        table_schemas_text += f"  {col}\n"
+                if len(table.columns) > 10:
+                    table_schemas_text += f"  ... and {len(table.columns) - 10} more columns\n"
+        else:
+            table_schemas_text = "No table schemas available"
         
         try:
-            # Generate query with LLM
-            response = self.query_model.invoke({"messages": enhanced_messages})
+            # Invoke the parameter extraction chain
+            result = self.parameter_chain.invoke({
+                "user_query": user_query,
+                "table_schemas": table_schemas_text
+            })
             
-            # Execute the generated SQL
-            if hasattr(response, 'tool_calls') and response.tool_calls:
-                tool_call = response.tool_calls[0]
-                if tool_call.get("name") == "db_query_tool":
-                    query = tool_call["args"].get("query", "") or tool_call["args"].get("__arg1", "")
-                    
-                    try:
-                        # Execute SQL tool
-                        result = self.execute_tool("db_query_tool", {"query": query})
-                        
-                        self.logger.info("SQL executed successfully", 
-                                       query=query[:100],
-                                       result_length=len(str(result)))
-                        
-                        return {
-                            "messages": messages + [
-                                response,
-                                AIMessage(content=f"Query executed successfully.")
-                            ],
-                            "generated_sql": query,
-                            "query_result": str(result)
-                        }
-                    except Exception as e:
-                        self.logger.error("SQL execution failed", error=str(e))
-                        return {
-                            "messages": messages + [
-                                response,
-                                AIMessage(content=f"SQL Error: {str(e)}")
-                            ],
-                            "generated_sql": query,
-                            "error_info": ErrorInfo(error_message=str(e), last_failed_query=query)
-                        }
+            if result and len(result) > 0:
+                query_params = result[0] if isinstance(result, list) else result
+                
+                # Validate that select_fields is not empty
+                if not query_params.select_fields:
+                    self.logger.error("No select fields extracted from user query")
+                    return {
+                        "query_parameters": QueryParameters(
+                            select_fields=["ERROR: Could not determine which fields to select"]
+                        )
+                    }
+                
+                self.logger.info("Query parameters extracted successfully", 
+                               select_fields=query_params.select_fields,
+                               filters_count=len(query_params.filters),
+                               group_by_count=len(query_params.group_by_fields),
+                               order_by_count=len(query_params.order_by))
+                
+                return {"query_parameters": query_params}
+            else:
+                self.logger.error("No parameters extracted from user query")
+                return {"query_parameters": QueryParameters(select_fields=[])}
+                
+        except Exception as e:
+            self.logger.error("Failed to extract query parameters", error=str(e))
+            return {
+                "query_parameters": QueryParameters(
+                    select_fields=[f"ERROR: Failed to parse query - {str(e)}"]
+                )
+            }
+
+class SQLGeneratorAgent(BaseAgent):
+    """AI-driven agent to generate SQL query from extracted parameters and table information"""
+    
+    def __init__(self, llm):
+        super().__init__("SQLGeneratorAgent", tools=[])
+        self.llm = llm
+        self._setup_sql_generation_chain()
+    
+    def _setup_sql_generation_chain(self):
+        """Setup the SQL generation chain using LLM"""
+        
+        self.system_prompt = """You are a MSSQL expert. Generate a syntactically correct MSSQL SELECT query based on the provided parameters.
+
+Table Schemas:
+{table_schemas}
+
+Query Parameters:
+- Select Fields: {select_fields}
+- Group By Fields: {group_by_fields}  
+- Order By: {order_by}
+- Filters: {filters}
+- Limit: {limit}
+
+MSSQL Rules:
+- Use TOP {limit} instead of LIMIT for row limiting
+- Use proper MSSQL syntax and functions
+- Use appropriate JOIN syntax when multiple tables are involved
+- Use square brackets [TableName] or [ColumnName] when needed
+- Handle data types correctly (NVARCHAR, UNIQUEIDENTIFIER, etc.)
+
+Generate ONLY a valid MSSQL SELECT statement. No explanations or additional text.
+"""
+
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", self.system_prompt),
+            ("human", "Generate the SQL query based on the parameters above."),
+        ])
+        
+        # Create the chain
+        self.sql_chain = self.prompt | self.llm
+    
+    def _format_parameters_for_prompt(self, query_parameters: QueryParameters) -> Dict[str, str]:
+        """Format query parameters for the prompt"""
+        
+        # Format order by
+        order_by_str = ""
+        if query_parameters.order_by:
+            order_items = [f"{ob.field} {ob.direction}" for ob in query_parameters.order_by]
+            order_by_str = ", ".join(order_items)
+        
+        # Format filters
+        filters_str = ""
+        if query_parameters.filters:
+            filter_items = [f"{f.field} {f.operator} {f.value}" for f in query_parameters.filters]
+            filters_str = " AND ".join(filter_items)
+        
+        return {
+            "select_fields": ", ".join(query_parameters.select_fields) if query_parameters.select_fields else "*",
+            "group_by_fields": ", ".join(query_parameters.group_by_fields) if query_parameters.group_by_fields else "None",
+            "order_by": order_by_str if order_by_str else "None",
+            "filters": filters_str if filters_str else "None",
+            "limit": str(query_parameters.limit) if query_parameters.limit else "None"
+        }
+    
+    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+        self.logger.info("Generating SQL query using AI")
+        
+        query_parameters = state.get("query_parameters")
+        relevant_tables = state.get("relevant_tables", [])
+        
+        if not query_parameters:
+            self.logger.error("No query parameters found in state")
+            return {"generated_sql": "-- ERROR: No query parameters found"}
+        
+        if not relevant_tables:
+            self.logger.error("No relevant tables found in state")
+            return {"generated_sql": "-- ERROR: No relevant tables found"}
+        
+        try:
+            # Prepare table schemas for prompt
+            table_schemas_text = ""
+            for table in relevant_tables:
+                table_schemas_text += f"\nTable: {table.name}\n"
+                if table.schema:
+                    # Show first few lines of schema
+                    schema_lines = table.schema.split('\n')[:10]
+                    table_schemas_text += "\n".join(schema_lines)
+                    if len(table.schema.split('\n')) > 10:
+                        table_schemas_text += "\n... (schema truncated)"
+                elif table.columns:
+                    table_schemas_text += "Columns:\n"
+                    for col in table.columns[:15]:  # Limit to first 15 columns
+                        table_schemas_text += f"  {col}\n"
+                    if len(table.columns) > 15:
+                        table_schemas_text += f"  ... and {len(table.columns) - 15} more columns\n"
+                table_schemas_text += "\n"
             
-            return {"messages": messages + [response]}
+            # Format parameters
+            formatted_params = self._format_parameters_for_prompt(query_parameters)
+            
+            # Invoke the AI chain
+            response = self.sql_chain.invoke({
+                "table_schemas": table_schemas_text,
+                **formatted_params
+            })
+            
+            # Extract SQL from response
+            generated_sql = response.content if hasattr(response, 'content') else str(response)
+            generated_sql = generated_sql.strip()
+            
+            # Clean up any markdown formatting
+            if generated_sql.startswith("```sql"):
+                generated_sql = generated_sql.replace("```sql", "").replace("```", "").strip()
+            elif generated_sql.startswith("```"):
+                generated_sql = generated_sql.replace("```", "").strip()
+            
+            self.logger.info("SQL query generated successfully using AI", 
+                           sql_length=len(generated_sql),
+                           tables_count=len(relevant_tables))
+            
+            return {"generated_sql": generated_sql}
             
         except Exception as e:
-            self.logger.error("Query generation failed", error=str(e))
-            return {"messages": messages + [AIMessage(content=f"Query generation error: {str(e)}")]}
+            self.logger.error("Failed to generate SQL query using AI", error=str(e))
+            return {"generated_sql": f"-- ERROR: Failed to generate SQL using AI - {str(e)}"}
 
-class FinalAnswerAgent(BaseAgent):
-    """Final answer formatting agent"""
+class SQLValidatorAgent(BaseAgent):
+    """Agent to validate that generated SQL is a safe SELECT statement"""
     
     def __init__(self):
-        super().__init__("FinalAnswerAgent", tools=[])
+        super().__init__("SQLValidatorAgent", tools=[])
     
-    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
-        self.logger.info("Creating final answer")
-        messages = state["messages"]
-        report_module = state.get("report_module", "dynamicreport")
-        user_parameters = state.get("user_parameters", UserParameters())
-        relevant_tables = state.get("relevant_tables", [])
+    def _is_safe_select_query(self, sql: str) -> tuple[bool, str]:
+        """Check if SQL is a safe SELECT query"""
+        
+        if not sql or sql.startswith("-- ERROR"):
+            return False, "SQL is empty or contains errors"
+        
+        # Clean and normalize SQL
+        cleaned_sql = sql.strip().upper()
+        
+        # Remove comments
+        lines = []
+        for line in cleaned_sql.split('\n'):
+            if not line.strip().startswith('--'):
+                lines.append(line)
+        cleaned_sql = ' '.join(lines)
+        
+        # Check if it starts with SELECT
+        if not cleaned_sql.startswith('SELECT'):
+            return False, "Query must start with SELECT"
+        
+        # Forbidden keywords (DML/DDL operations)
+        forbidden_keywords = [
+            'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 'ALTER', 
+            'TRUNCATE', 'EXEC', 'EXECUTE', 'DECLARE', 'SET', 'GRANT', 
+            'REVOKE', 'DENY', 'BACKUP', 'RESTORE', 'MERGE', 'BULK'
+        ]
+        
+        for keyword in forbidden_keywords:
+            if f' {keyword} ' in f' {cleaned_sql} ':
+                return False, f"Forbidden keyword detected: {keyword}"
+        
+        # Check for dangerous patterns
+        dangerous_patterns = [
+            'EXEC(',
+            'EXECUTE(',
+            'SP_',
+            'XP_',
+            'OPENROWSET',
+            'OPENDATASOURCE'
+        ]
+        
+        for pattern in dangerous_patterns:
+            if pattern in cleaned_sql:
+                return False, f"Dangerous pattern detected: {pattern}"
+        
+        return True, "Valid SELECT query"
+    
+    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+        self.logger.info("Validating generated SQL query")
+        
         generated_sql = state.get("generated_sql", "")
-        query_result = state.get("query_result", "")
         
-        # Convert dict to UserParameters if needed
-        if isinstance(user_parameters, dict):
-            user_parameters = UserParameters(**user_parameters)
+        if not generated_sql:
+            self.logger.error("No generated SQL found in state")
+            return {
+                "validated_sql": "-- ERROR: No SQL to validate",
+                "is_valid": False
+            }
         
-        user_question = StateManager.get_user_question(messages)
-        
-        if query_result and not query_result.startswith("Error:"):
-            self.logger.info("Creating successful result")
+        try:
+            is_valid, message = self._is_safe_select_query(generated_sql)
             
-            final_text = f"""✅ **{report_module.title()} Raporu Başarıyla Oluşturuldu!**
+            if is_valid:
+                self.logger.info("SQL validation passed", message=message)
+                return {
+                    "validated_sql": generated_sql,
+                    "is_valid": True
+                }
+            else:
+                self.logger.error("SQL validation failed", reason=message)
+                return {
+                    "validated_sql": f"-- VALIDATION ERROR: {message}\n-- Original SQL: {generated_sql}",
+                    "is_valid": False
+                }
+                
+        except Exception as e:
+            self.logger.error("SQL validation error", error=str(e))
+            return {
+                "validated_sql": f"-- VALIDATION ERROR: {str(e)}\n-- Original SQL: {generated_sql}",
+                "is_valid": False
+            }
 
-📋 **Sorunuz:** {user_question}
-
-📊 **Rapor Modülü:** {report_module.title()}
-
-📋 **AI Seçimi:** {', '.join(relevant_tables) if relevant_tables else 'Belirlenmedi'}
-
-⚙️ **Parametreler:**
-- Limit: {user_parameters.limit}
-- Gruplama: {', '.join(user_parameters.group_by_fields) if user_parameters.group_by_fields else 'Yok'}
-- Sıralama: {', '.join(user_parameters.order_by_fields) if user_parameters.order_by_fields else 'Varsayılan'}
-
-🔍 **Çalıştırılan SQL:**
-```sql
-{generated_sql}
-```
-
-📊 **Sonuçlar:**
-{query_result}
-
-💡 **Özet:** AI-driven analiz ile rapor başarıyla oluşturuldu."""
-        else:
-            self.logger.error("Creating error result")
-            final_text = f"""❌ **Rapor Oluşturma Hatası**
-
-📋 **Sorunuz:** {user_question}
-📊 **Rapor Modülü:** {report_module.title()}
-
-Query sonucu bulunamadı veya hata oluştu. Lütfen tekrar deneyin."""
+class SQLExecutorAgent(BaseAgent):
+    """Agent to execute validated SQL queries using database tools"""
+    
+    def __init__(self, tools: List):
+        # Filter only the db_query_tool for SQL execution
+        execution_tools = [t for t in tools if t.name == "db_query_tool"]
+        super().__init__("SQLExecutorAgent", tools=execution_tools)
+    
+    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+        self.logger.info("Executing validated SQL query")
         
-        response = AIMessage(content=final_text)
-        return {"messages": messages + [response]}
+        validated_sql = state.get("validated_sql", "")
+        is_valid = state.get("is_valid", False)
+        
+        if not validated_sql:
+            self.logger.error("No validated SQL found in state")
+            return {
+                "sql_result": "ERROR: No SQL to execute",
+                "is_error": True,
+                "error_message": "No validated SQL found in state"
+            }
+        
+        if not is_valid:
+            self.logger.error("Cannot execute invalid SQL")
+            return {
+                "sql_result": "ERROR: Cannot execute invalid SQL",
+                "is_error": True,
+                "error_message": "Cannot execute invalid SQL"
+            }
+        
+        # Check if SQL starts with validation error
+        if validated_sql.startswith("-- VALIDATION ERROR"):
+            self.logger.error("Cannot execute SQL with validation errors")
+            return {
+                "sql_result": "ERROR: Cannot execute SQL with validation errors",
+                "is_error": True,
+                "error_message": "Cannot execute SQL with validation errors"
+            }
+        
+        try:
+            # Execute the SQL using db_query_tool
+            result = self.execute_tool("db_query_tool", {"query": validated_sql})
+            
+            self.logger.info("SQL executed successfully", 
+                           result_length=len(str(result)))
+            
+            return {
+                "sql_result": str(result),
+                "is_error": False,
+                "error_message": ""
+            }
+            
+        except Exception as e:
+            self.logger.error("Failed to execute SQL", error=str(e))
+            return {
+                "sql_result": f"EXECUTION ERROR: {str(e)}",
+                "is_error": True,
+                "error_message": str(e)
+            }
+
+class FixSQLAgent(BaseAgent):
+    """AI-powered agent to fix SQL execution errors"""
+    
+    def __init__(self, llm):
+        super().__init__("FixSQLAgent", tools=[])
+        self.llm = llm
+        self._setup_fix_sql_chain()
+    
+    def _setup_fix_sql_chain(self):
+        """Setup the SQL fixing chain using LLM"""
+        
+        self.system_prompt = """You are a MSSQL expert specialized in fixing SQL execution errors.
+
+You will receive:
+1. **Original SQL Query**: The SQL that failed to execute
+2. **Error Message**: The specific database error 
+3. **Table Schemas**: Available table structures with correct column names
+4. **User Query**: The original user request
+
+Your task:
+- Analyze the error message carefully
+- Check table schemas for correct column names and data types
+- Fix the SQL query to address the specific error
+- Use only columns that actually exist in the table schemas
+- Maintain the original query intent and logic
+- Use proper MSSQL syntax
+
+Common MSSQL errors to fix:
+- Invalid column names (use correct column names from schema)
+- Invalid table references  
+- JOIN syntax errors (use correct foreign key relationships)
+- Data type mismatches
+- Syntax errors
+
+Table Schemas:
+{table_schemas}
+
+Original SQL:
+{original_sql}
+
+Error Message:
+{error_message}
+
+User Query Context:
+{user_query}
+
+Generate ONLY a corrected MSSQL SELECT statement. No explanations or additional text.
+"""
+
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", self.system_prompt),
+            ("human", "Fix the SQL query based on the error message and table schemas above."),
+        ])
+        
+        # Create the chain
+        self.fix_chain = self.prompt | self.llm
+    
+    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+        self.logger.info("Fixing SQL execution error using AI")
+        
+        validated_sql = state.get("validated_sql", "")
+        error_message = state.get("error_message", "")
+        relevant_tables = state.get("relevant_tables", [])
+        user_query = state.get("user_query", "")
+        is_error = state.get("is_error", False)
+        
+        if not is_error:
+            self.logger.info("No error to fix, returning original SQL")
+            return {"fixed_sql": validated_sql}
+        
+        if not validated_sql or not error_message:
+            self.logger.error("Missing SQL or error message for fixing")
+            return {"fixed_sql": "-- ERROR: Cannot fix SQL - missing information"}
+        
+        try:
+            # Prepare table schemas for prompt
+            table_schemas_text = ""
+            if relevant_tables:
+                for table in relevant_tables:
+                    table_schemas_text += f"\nTable: {table.name}\n"
+                    if table.schema:
+                        # Show full schema for fixing
+                        table_schemas_text += table.schema + "\n"
+                    elif table.columns:
+                        table_schemas_text += "Columns:\n"
+                        for col in table.columns:
+                            table_schemas_text += f"  {col}\n"
+                    table_schemas_text += "\n"
+            else:
+                table_schemas_text = "No table schemas available"
+            
+            # Invoke the AI fix chain
+            response = self.fix_chain.invoke({
+                "table_schemas": table_schemas_text,
+                "original_sql": validated_sql,
+                "error_message": error_message,
+                "user_query": user_query
+            })
+            
+            # Extract fixed SQL from response
+            fixed_sql = response.content if hasattr(response, 'content') else str(response)
+            fixed_sql = fixed_sql.strip()
+            
+            # Clean up any markdown formatting
+            if fixed_sql.startswith("```sql"):
+                fixed_sql = fixed_sql.replace("```sql", "").replace("```", "").strip()
+            elif fixed_sql.startswith("```"):
+                fixed_sql = fixed_sql.replace("```", "").strip()
+            
+            self.logger.info("SQL fixed successfully using AI", 
+                           original_length=len(validated_sql),
+                           fixed_length=len(fixed_sql))
+            
+            return {"fixed_sql": fixed_sql}
+            
+        except Exception as e:
+            self.logger.error("Failed to fix SQL using AI", error=str(e))
+            return {"fixed_sql": f"-- ERROR: Failed to fix SQL - {str(e)}"}
+
 
 # ================================
 # TOOL MANAGER
@@ -460,7 +903,7 @@ class SQLToolManager:
     def __init__(self, db, llm):
         self.db = db
         self.llm = llm
-        self.logger = log.get(module="text2sql", component="tool_manager")
+        self.logger = log.get(module="test_graph", component="tool_manager")
     
     def get_tools(self) -> List:
         self.logger.info("Loading SQL tools")
@@ -471,26 +914,26 @@ class SQLToolManager:
         return tools
 
 # ================================
-# SIMPLE TEXT2SQL GRAPH - Agent Based
+# Text2SQL GRAPH
 # ================================
 @register_graph("text2sql")
 class Text2SQLGraph(BaseGraph):
-    """Simple & Clean Text2SQL Graph - LangGraph Native Agents"""
-    
+    """Enhanced Text2SQLGraph with intelligent table selection"""
+
     def __init__(self, llm, db=None):
-        super().__init__(llm=llm, state_class=Text2SQLState)
-        self.logger = log.get(module="text2sql", component="graph")
+        super().__init__(llm=llm, state_class=TestState)
+        self.logger = log.get(module="test_graph", component="graph")
         
         if db is None:
             db = SQLDatabase.from_uri(config.database.uri)
         
         self.db = db
         self.tool_manager = SQLToolManager(db, llm.get_chat())
-        self.tools = self.tool_manager.get_tools() + [analyze_user_query_for_tables]
+        self.tools = self.tool_manager.get_tools()
         
         self._create_agents()
         
-        self.logger.info("Text2SQL Graph initialized", 
+        self.logger.info("Enhanced TestGraph initialized", 
                         tools_count=len(self.tools),
                         agents=list(self.agents.keys()))
     
@@ -499,39 +942,59 @@ class Text2SQLGraph(BaseGraph):
         self.agents = {
             "initialization": InitializationAgent(),
             "table_listing": TableListingAgent(self.tools),
-            "schema_analysis": SchemaAnalysisAgent(self.tools),
-            "schema_retrieval": SchemaRetrievalAgent(self.tools),
-            "query_generation": QueryGenerationAgent(self.llm.get_chat(), self.tools),
-            "final_answer": FinalAnswerAgent(),
+            "relevant_tables": RelevantTablesAgent(self.llm.get_chat()),
+            "schema": SchemaAgent(self.tools),
+            "query_parameters": QueryParameterAgent(self.llm.get_chat()),
+            "sql_generator": SQLGeneratorAgent(self.llm.get_chat()),
+            "sql_validator": SQLValidatorAgent(),
+            "sql_executor": SQLExecutorAgent(self.tools),
+            "fix_sql": FixSQLAgent(self.llm.get_chat()),
         }
+        
+        # Create router
+        self.sql_router = SQLExecutionRouter()
     
     def build_graph(self):
-        """Build Simple Agent-Based Graph - Direct Linear Flow"""
-        self.logger.info("Building agent-based Text2SQL graph")
+        """Build Enhanced Text2SQL Graph - Nine Step Flow with Error Handling and SQL Fixing"""
+        self.logger.info("Building enhanced text2sql graph with SQL error handling and fixing")
         
         memory = MemorySaver()
-        graph = StateGraph(Text2SQLState)
+        graph = StateGraph(TestState)
         
-        # Add all agents as nodes
+        # Add agents as nodes
         for agent_name, agent_instance in self.agents.items():
             graph.add_node(agent_name, agent_instance)
         
         # ================================
-        # SIMPLE LINEAR AGENT FLOW
+        # NINE-STEP FLOW WITH CONDITIONAL ROUTING
         # ================================
         
         graph.add_edge(START, "initialization")
         graph.add_edge("initialization", "table_listing")
-        graph.add_edge("table_listing", "schema_analysis") 
-        graph.add_edge("schema_analysis", "schema_retrieval")
-        graph.add_edge("schema_retrieval", "query_generation")
-        graph.add_edge("query_generation", "final_answer")
-        graph.add_edge("final_answer", END)
+        graph.add_edge("table_listing", "relevant_tables")
+        graph.add_edge("relevant_tables", "schema")
+        graph.add_edge("schema", "query_parameters")
+        graph.add_edge("query_parameters", "sql_generator")
+        graph.add_edge("sql_generator", "sql_validator")
+        graph.add_edge("sql_validator", "sql_executor")
+        
+        # Conditional routing after SQL execution
+        graph.add_conditional_edges(
+            "sql_executor",
+            self.sql_router.route,
+            {
+                "fix_sql": "fix_sql",
+                "end": END
+            }
+        )
+        
+        # Fix SQL agent goes to END
+        graph.add_edge("fix_sql", END)
         
         compiled_graph = graph.compile(
             checkpointer=memory,
-            name="agent_text2sql_graph"
+            name="enhanced_text2sql_graph"
         )
-        
-        self.logger.info("Agent-based Text2SQL graph compiled successfully")
+
+        self.logger.info("Enhanced text2sql graph compiled successfully with error handling and SQL fixing")
         return compiled_graph
