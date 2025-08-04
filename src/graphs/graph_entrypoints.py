@@ -49,3 +49,7 @@ def test_graph():
 def main_graph_with_tools():
     return graph("main_graph_with_tools").build_graph()
 
+
+def supervisor_graph():
+    return graph("supervisor").build_graph()
+
