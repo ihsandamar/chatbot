@@ -1,807 +1,537 @@
-# src/graphs/text2sql_graph.py - SOLID Refactored Version
+# src/graphs/text2sql_graph.py - LangGraph Native with Runnable Agents
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Literal, Optional, TypedDict
+from dataclasses import dataclass
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.prebuilt import ToolNode
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.tools import tool
+from langchain_core.runnables import Runnable
+from typing_extensions import NotRequired
 
 from src.graphs.base_graph import BaseGraph
 from src.graphs.registry import register_graph
-from src.models.models import State
 from src.tools.langgraph_sql_tools import LangGraphSQLTools
 from src.tools.custom_sql_tools import CustomSQLTools
+from src.services.app_logger import log
 
 from langchain_community.utilities import SQLDatabase
 from src.services.config_loader import ConfigLoader
 
-
+# Load configuration
 config = ConfigLoader.load_config("config/text2sql_config.yaml")
 
+# ================================
+# DYNAMIC AI TABLE ANALYZER TOOL
+# ================================
+@tool
+def analyze_user_query_for_tables(user_query: str, all_tables: str) -> str:
+    """AI tool to dynamically analyze user query and select most relevant database tables."""
+    from langchain_openai import ChatOpenAI
+    from langchain_core.prompts import ChatPromptTemplate
+    
+    tables_list = [t.strip() for t in all_tables.split(',') if t.strip()]
+    
+    try:
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0, api_key=config.llm.api_key)
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a database expert. Analyze the user query and select the most relevant tables.
 
-# SOLID Principle 1: Single Responsibility Principle (SRP)
-class MessageExtractor:
-    """Mesajlardan bilgi çıkarma sorumluluğu - SRP"""
+INSTRUCTIONS:
+- Understand the user's intent and data needs
+- Select 3-8 most relevant tables that contain the requested data
+- Consider table relationships and dependencies
+- Focus on tables that directly relate to the user's question
+- Return ONLY table names separated by commas, no explanations
+
+EXAMPLES:
+- "Products data" → Tables with "Product" in name
+- "Customer information" → Tables with "Customer" related data
+- "Sales report" → Tables related to sales, orders, transactions
+- "BOM listing" → Tables related to Bill of Materials"""),
+            ("human", f"""User Query: {user_query}
+
+Available Tables: {all_tables}
+
+Select the most relevant tables (comma separated):""")
+        ])
+        
+        response = llm.invoke(prompt.format_messages())
+        selected = [t.strip() for t in response.content.split(',') if t.strip()]
+        valid_selected = [t for t in selected if t in tables_list]
+        
+        result = ', '.join(valid_selected[:8]) if valid_selected else ', '.join(tables_list[:5])
+        print(f"[AI ANALYSIS] Query: {user_query[:50]} → Tables: {result}")
+        return result
+        
+    except Exception as e:
+        print(f"[AI ANALYSIS ERROR] {e}")
+        return ', '.join(tables_list[:5])
+
+# ================================
+# STATE DEFINITION
+# ================================
+@dataclass
+class UserParameters:
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    group_by_fields: List[str] = None
+    order_by_fields: List[str] = None
+    limit: int = 100
+    filters: Dict[str, Any] = None
+    
+    def __post_init__(self):
+        if self.group_by_fields is None:
+            self.group_by_fields = []
+        if self.filters is None:
+            self.filters = {}
+
+@dataclass
+class ErrorInfo:
+    error_message: str = ""
+    retry_count: int = 0
+    max_retries: int = 3
+    last_failed_query: str = ""
+
+class Text2SQLState(TypedDict):
+    messages: List[Any]
+    report_module: NotRequired[Literal["masterreport", "accounting", "dynamicreport"]]
+    user_parameters: NotRequired[UserParameters]
+    all_tables: NotRequired[List[str]]
+    relevant_tables: NotRequired[List[str]]
+    table_schemas: NotRequired[str]
+    generated_sql: NotRequired[str]
+    query_result: NotRequired[str]
+    error_info: NotRequired[ErrorInfo]
+    schema_loaded: NotRequired[bool]
+    tables_listed: NotRequired[bool]
+
+# ================================
+# UTILITY CLASSES
+# ================================
+class StateManager:
+    @staticmethod
+    def init_state(state: Text2SQLState) -> Text2SQLState:
+        defaults = {
+            "user_parameters": UserParameters(),
+            "error_info": ErrorInfo(),
+            "schema_loaded": False,
+            "tables_listed": False,
+            "all_tables": [],
+            "relevant_tables": [],
+            "table_schemas": ""
+        }
+        for key, value in defaults.items():
+            if key not in state:
+                state[key] = value
+        return state
     
     @staticmethod
-    def get_last_user_question(messages: List) -> str:
-        """Son kullanıcı sorusunu çıkar"""
+    def get_user_question(messages: List) -> str:
         for msg in reversed(messages):
-            if hasattr(msg, 'type') and msg.type == 'human':
-                if hasattr(msg, 'content'):
-                    if isinstance(msg.content, list) and len(msg.content) > 0:
-                        if isinstance(msg.content[0], dict) and 'text' in msg.content[0]:
-                            return msg.content[0]['text']
-                    elif isinstance(msg.content, str):
-                        return msg.content
+            if isinstance(msg, str):
+                return msg
+            elif hasattr(msg, 'type') and msg.type == 'human' and hasattr(msg, 'content'):
+                if isinstance(msg.content, str):
+                    return msg.content
+        if messages and isinstance(messages[0], str):
+            return messages[0]
         return "Soru bulunamadı"
+
+# ================================
+# BASE AGENT - LangGraph Runnable Native
+# ================================
+class BaseAgent(Runnable, ABC):
+    """Base Agent class - LangGraph Runnable Native"""
     
-    @staticmethod
-    def find_tool_result(messages: List, tool_call_pattern: str) -> tuple[str, str]:
-        """Tool sonucunu ve çalıştırılan query'yi bul"""
-        query_result = ""
-        executed_query = ""
-        
-        for msg in reversed(messages):
-            if hasattr(msg, 'tool_call_id') and hasattr(msg, 'content'):
-                if tool_call_pattern in str(msg.tool_call_id):
-                    query_result = msg.content
-                    
-                    # Önceki AI message'da query var
-                    msg_index = messages.index(msg)
-                    if msg_index > 0:
-                        prev_msg = messages[msg_index - 1]
-                        if hasattr(prev_msg, 'tool_calls') and prev_msg.tool_calls:
-                            for tc in prev_msg.tool_calls:
-                                if tc.get("name") == "db_query_tool":
-                                    executed_query = tc["args"].get("__arg1", "") or tc["args"].get("query", "")
-                                    break
-                    break
-        
-        return query_result, executed_query
-
-
-class TableSelector:
-    """Tablo seçme sorumluluğu - SRP"""
-    
-    @staticmethod
-    def select_relevant_tables(user_question: str, available_tables: List[str]) -> List[str]:
-        """Kullanıcı sorusuna göre ilgili tabloları seç"""
-        user_question_lower = user_question.lower()
-        
-        if "product" in user_question_lower or "espresso" in user_question_lower:
-            return ["Products", "Categories", "ProductCategories"]
-        elif "order" in user_question_lower:
-            return ["Orders", "OrderDetails", "Products", "Customers"]
-        elif "customer" in user_question_lower:
-            return ["Customers", "Orders"]
-        else:
-            # Default olarak ilk 3 tabloyu al
-            return available_tables[:3]
-    
-    @staticmethod
-    def is_master_report_request(user_question: str) -> bool:
-        """MasterReport modülü için istek mi kontrol et"""
-        master_report_keywords = [
-            "ciro raporu", "paket servis raporu", "master report", "masterreport",
-            "satış raporu", "ürün raporu", "kategori raporu", "günlük rapor",
-            "haftalık rapor", "aylık rapor", "işletme raporu", "şube raporu"
-        ]
-        
-        user_question_lower = user_question.lower()
-        return any(keyword in user_question_lower for keyword in master_report_keywords)
-
-
-# SOLID Principle 2: Open/Closed Principle (OCP)
-class NodeInterface(ABC):
-    """Node'lar için ortak interface - OCP"""
-    
-    @abstractmethod
-    def execute(self, state: State) -> Dict[str, Any]:
-        pass
-
-
-class BaseNode(NodeInterface):
-    """Node'lar için base class - OCP"""
-    
-    def __init__(self, name: str):
+    def __init__(self, name: str, tools: List = None):
+        super().__init__()
         self.name = name
+        self.tools = tools or []
+        self.tools_dict = {tool.name: tool for tool in self.tools}
+        self.logger = log.get(module="text2sql", agent=name)
     
-    def log_debug(self, message: str):
-        print(f"[DEBUG] {self.name}: {message}")
+    @abstractmethod
+    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
+        """LangGraph Runnable invoke method"""
+        pass
+    
+    def execute_tool(self, tool_name: str, args: dict) -> Any:
+        """Execute a tool by name with error handling"""
+        tool = self.tools_dict.get(tool_name)
+        if not tool:
+            raise ValueError(f"Tool '{tool_name}' not found in agent '{self.name}'")
+        
+        try:
+            result = tool.invoke(args)
+            self.logger.info("Tool executed successfully", tool=tool_name, args=str(args)[:100])
+            return result
+        except Exception as e:
+            self.logger.error("Tool execution failed", tool=tool_name, error=str(e))
+            raise e
 
-
-class ListTablesNode(BaseNode):
-    """Tabloları listeleme node'u - SRP"""
+# ================================
+# AGENT IMPLEMENTATIONS
+# ================================
+class InitializationAgent(BaseAgent):
+    """State initialization agent"""
     
     def __init__(self):
-        super().__init__("ListTablesNode")
+        super().__init__("InitializationAgent", tools=[])
     
-    def execute(self, state: State) -> Dict[str, Any]:
-        self.log_debug("Listing all database tables")
+    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
+        self.logger.info("Initializing Text2SQL state")
+        state = StateManager.init_state(state)
+        user_question = StateManager.get_user_question(state["messages"])
+        self.logger.info("User question received", question=user_question[:100])
+        return {"messages": state["messages"]}
+
+class TableListingAgent(BaseAgent):
+    """Database table listing agent"""
+    
+    def __init__(self, tools: List):
+        # Filter only the sql_db_list_tables tool
+        list_tools = [t for t in tools if t.name == "sql_db_list_tables"]
+        super().__init__("TableListingAgent", tools=list_tools)
+    
+    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
+        self.logger.info("Listing database tables")
         messages = state["messages"]
         
-        response = AIMessage(
-            content="Listing all database tables to understand the schema.",
-            tool_calls=[{
-                "name": "sql_db_list_tables",
-                "args": {},
-                "id": "list_tables_call",
-            }]
-        )
-        
-        return {"messages": messages + [response]}
+        try:
+            # Execute list tables tool
+            result = self.execute_tool("sql_db_list_tables", {})
+            
+            # Parse table list
+            all_tables = [t.strip().strip("'\"") for t in str(result).replace('[', '').replace(']', '').replace("'", "").split(',')]
+            all_tables = [t for t in all_tables if t]
+            
+            self.logger.info("Tables listed successfully", count=len(all_tables))
+            
+            return {
+                "messages": messages + [AIMessage(content=f"Found {len(all_tables)} tables in database")],
+                "all_tables": all_tables,
+                "tables_listed": True
+            }
+        except Exception as e:
+            self.logger.error("Failed to list tables", error=str(e))
+            return {"messages": messages + [AIMessage(content=f"Error listing tables: {str(e)}")]}
 
-
-class GetSchemaNode(BaseNode):
-    """Şema alma node'u - SRP"""
+class SchemaAnalysisAgent(BaseAgent):
+    """AI-driven schema analysis agent"""
     
-    def __init__(self):
-        super().__init__("GetSchemaNode")
-        self.message_extractor = MessageExtractor()
-        self.table_selector = TableSelector()
+    def __init__(self, tools: List):
+        # Filter only the AI analysis tool
+        analysis_tools = [t for t in tools if t.name == "analyze_user_query_for_tables"]
+        super().__init__("SchemaAnalysisAgent", tools=analysis_tools)
     
-    def execute(self, state: State) -> Dict[str, Any]:
-        self.log_debug("Getting table schemas")
+    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
+        self.logger.info("Analyzing user query for relevant tables")
         messages = state["messages"]
+        all_tables = state.get("all_tables", [])
         
-        # Table listesini bul
-        table_list = ""
-        for msg in reversed(messages):
-            if hasattr(msg, 'tool_call_id') and "list_tables" in str(msg.tool_call_id):
-                table_list = msg.content
-                break
+        if not all_tables:
+            return {"messages": messages + [AIMessage(content="No tables available for analysis")]}
         
-        if table_list:
-            # Kullanıcı sorusunu al ve ilgili tabloları seç
-            user_question = self.message_extractor.get_last_user_question(messages)
-            available_tables = [t.strip() for t in table_list.replace('[', '').replace(']', '').split(',')]
-            important_tables = self.table_selector.select_relevant_tables(user_question, available_tables)
-            
-            self.log_debug(f"Selected tables: {important_tables}")
-            
-            response = AIMessage(
-                content=f"Getting schema for relevant tables: {', '.join(important_tables)}",
-                tool_calls=[{
-                    "name": "sql_db_schema",
-                    "args": {"table_names": ", ".join(important_tables)},
-                    "id": "schema_call",
-                }]
-            )
-            
-            return {"messages": messages + [response]}
+        user_question = StateManager.get_user_question(messages)
         
-        # Table list yoksa boş response
-        response = AIMessage(content="No tables found to get schema.")
-        return {"messages": messages + [response]}
+        try:
+            # Execute AI analysis tool
+            result = self.execute_tool("analyze_user_query_for_tables", {
+                "user_query": user_question,
+                "all_tables": ", ".join(all_tables)
+            })
+            
+            # Parse selected tables
+            selected_tables = [t.strip() for t in str(result).split(',') if t.strip()]
+            
+            self.logger.info("AI analysis completed", 
+                           user_question=user_question[:50],
+                           selected_count=len(selected_tables),
+                           selected_tables=selected_tables)
+            
+            return {
+                "messages": messages + [AIMessage(content=f"AI selected {len(selected_tables)} relevant tables: {', '.join(selected_tables)}")],
+                "relevant_tables": selected_tables
+            }
+        except Exception as e:
+            self.logger.error("AI analysis failed", error=str(e))
+            # Fallback: use first 5 tables
+            fallback_tables = all_tables[:5]
+            return {
+                "messages": messages + [AIMessage(content=f"Using fallback tables: {', '.join(fallback_tables)}")],
+                "relevant_tables": fallback_tables
+            }
 
-
-class ExecuteQueryNode(BaseNode):
-    """Query çalıştırma node'u - SRP"""
+class SchemaRetrievalAgent(BaseAgent):
+    """Database schema retrieval agent"""
     
-    def __init__(self, llm, tools):
-        super().__init__("ExecuteQueryNode")
-        self.query_model = self._create_query_model(llm, tools)
-        self.master_report_query_model = self._create_master_report_query_model(llm, tools)
+    def __init__(self, tools: List):
+        # Filter only the schema tool
+        schema_tools = [t for t in tools if t.name == "sql_db_schema"]
+        super().__init__("SchemaRetrievalAgent", tools=schema_tools)
     
-    def _create_query_model(self, llm, tools):
-        """Normal query model oluştur"""
-        query_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a MSSQL expert. Based on the table schemas provided, generate a syntactically correct MSSQL query and execute it.
+    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
+        self.logger.info("Retrieving schema for selected tables")
+        messages = state["messages"]
+        relevant_tables = state.get("relevant_tables", [])
+        
+        if not relevant_tables:
+            return {"messages": messages + [AIMessage(content="No relevant tables found for schema retrieval")]}
+        
+        try:
+            # Execute schema tool
+            result = self.execute_tool("sql_db_schema", {"table_names": ", ".join(relevant_tables)})
+            
+            self.logger.info("Schema retrieved successfully", 
+                           tables=relevant_tables,
+                           schema_length=len(str(result)))
+            
+            return {
+                "messages": messages + [AIMessage(content=f"Schema loaded for {len(relevant_tables)} tables")],
+                "table_schemas": str(result),
+                "schema_loaded": True
+            }
+        except Exception as e:
+            self.logger.error("Schema retrieval failed", error=str(e))
+            return {"messages": messages + [AIMessage(content=f"Error retrieving schema: {str(e)}")]}
 
-Rules:
-- Use the exact table and column names from the schemas
-- Join tables properly using foreign keys
-- Get at most 5 results unless specified otherwise
-- Only query relevant columns
-- Use meaningful ORDER BY clauses
-- Handle many-to-many relationships through junction tables
+class QueryGenerationAgent(BaseAgent):
+    """SQL query generation and execution agent"""
+    
+    def __init__(self, llm, tools: List):
+        # Filter only the SQL execution tool
+        sql_tools = [t for t in tools if t.name == "db_query_tool"]
+        super().__init__("QueryGenerationAgent", tools=sql_tools)
+        self.llm = llm
+        self._setup_model()
+    
+    def _setup_model(self):
+        self.query_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a MSSQL expert. Generate and execute SQL queries based on the provided schema.
 
-After generating the SQL query, IMMEDIATELY use db_query_tool to execute it."""),
+INSTRUCTIONS:
+- Use EXACT table and column names from the schema
+- Generate simple, working SQL queries first
+- Apply user parameters for filtering and limiting
+- Focus on the user's specific request
+
+The schema and user parameters are provided in the conversation."""),
             ("placeholder", "{messages}")
         ])
         
-        return query_prompt | llm.bind_tools([
-            tool for tool in tools if tool.name == "db_query_tool"
-        ], tool_choice="required")
+        self.query_model = self.query_prompt | self.llm.bind_tools(
+            self.tools, tool_choice="required"
+        )
     
-    def _create_master_report_query_model(self, llm, tools):
-        """MasterReport query model oluştur"""
-        master_report_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a MSSQL expert for MasterReport module. The MasterReport temp tables have been created with the following structure:
-
-#MasterReportTable contains columns:
-- İşletme_Adı, Şube_Adı, Kasa_Adı, Masa_Adı, Cari_Adı
-- Şube_Grup_Adı, İşletme_Tipi, Şube_Şehir_Adı, Şube_İlçe_Adı
-- Adisyon_Id, Adisyon_Tarihi, Belge_Nevi_Adı, Belge_Tipi_Adı
-- Iade_Belgesi_mi, Haftanın_Günü, Saat
-- Adisyon_Detay_Id, Ürün_Adı, Miktar, Ürün_Tutarı
-- Ürüne_Uygulanan_İndirim_Tutarı, Ürün_Kategori_Adı, Ürün_Birim_Adı
-- Ikram_Zayi_İptal_Mi
-
-Generate reports using #MasterReportTable for:
-- Ciro raporu (Revenue reports)
-- Paket servis raporu (Package service reports)
-- Satış raporu (Sales reports)
-- Ürün raporu (Product reports)
-- Kategori raporu (Category reports)
-
-Use Turkish column names as shown above. Generate appropriate GROUP BY, SUM, COUNT queries.
-After generating the SQL query, IMMEDIATELY use db_query_tool to execute it."""),
-            ("placeholder", "{messages}")
-        ])
-        
-        return master_report_prompt | llm.bind_tools([
-            tool for tool in tools if tool.name == "db_query_tool"
-        ], tool_choice="required")
-    
-    def execute(self, state: State) -> Dict[str, Any]:
+    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
+        self.logger.info("Generating and executing SQL query")
         messages = state["messages"]
+        user_parameters = state.get("user_parameters", UserParameters())
         
-        # MasterReport setup yapıldı mı kontrol et
-        master_report_setup = any(
-            hasattr(msg, 'tool_call_id') and "master_report_setup" in str(msg.tool_call_id) 
-            for msg in messages
-        )
+        # Convert dict to UserParameters if needed
+        if isinstance(user_parameters, dict):
+            user_parameters = UserParameters(**user_parameters)
         
-        # Schema var mı kontrol et (normal flow için)
-        schema_found = any(
-            hasattr(msg, 'tool_call_id') and "schema" in str(msg.tool_call_id) 
-            for msg in messages
-        )
+        # Check if schema is loaded
+        if not state.get("schema_loaded", False):
+            return {"messages": messages + [AIMessage(content="Schema not loaded, cannot generate query")]}
         
-        if master_report_setup:
-            self.log_debug("Generate MasterReport query")
-            response = self.master_report_query_model.invoke({"messages": messages})
-            self.log_debug(f"MasterReport query model response with {len(getattr(response, 'tool_calls', []))} tool calls")
-            return {"messages": messages + [response]}
-        elif schema_found:
-            self.log_debug("Generate normal query")
-            response = self.query_model.invoke({"messages": messages})
-            self.log_debug(f"Normal query model response with {len(getattr(response, 'tool_calls', []))} tool calls")
-            return {"messages": messages + [response]}
-        else:
-            response = AIMessage(content="Schema or MasterReport setup not found, cannot generate query.")
-            return {"messages": messages + [response]}
+        # Add parameter context
+        param_context = f"""
+User Parameters:
+- Limit: {user_parameters.limit}
+- Group By: {', '.join(user_parameters.group_by_fields) if user_parameters.group_by_fields else 'None'}
+- Order By: {', '.join(user_parameters.order_by_fields) if user_parameters.order_by_fields else 'None'}
+- Filters: {user_parameters.filters if user_parameters.filters else 'None'}
 
+Please generate and execute a SQL query based on the schema and user request.
+"""
+        
+        enhanced_messages = messages + [HumanMessage(content=param_context)]
+        
+        try:
+            # Generate query with LLM
+            response = self.query_model.invoke({"messages": enhanced_messages})
+            
+            # Execute the generated SQL
+            if hasattr(response, 'tool_calls') and response.tool_calls:
+                tool_call = response.tool_calls[0]
+                if tool_call.get("name") == "db_query_tool":
+                    query = tool_call["args"].get("query", "") or tool_call["args"].get("__arg1", "")
+                    
+                    try:
+                        # Execute SQL tool
+                        result = self.execute_tool("db_query_tool", {"query": query})
+                        
+                        self.logger.info("SQL executed successfully", 
+                                       query=query[:100],
+                                       result_length=len(str(result)))
+                        
+                        return {
+                            "messages": messages + [
+                                response,
+                                AIMessage(content=f"Query executed successfully.")
+                            ],
+                            "generated_sql": query,
+                            "query_result": str(result)
+                        }
+                    except Exception as e:
+                        self.logger.error("SQL execution failed", error=str(e))
+                        return {
+                            "messages": messages + [
+                                response,
+                                AIMessage(content=f"SQL Error: {str(e)}")
+                            ],
+                            "generated_sql": query,
+                            "error_info": ErrorInfo(error_message=str(e), last_failed_query=query)
+                        }
+            
+            return {"messages": messages + [response]}
+            
+        except Exception as e:
+            self.logger.error("Query generation failed", error=str(e))
+            return {"messages": messages + [AIMessage(content=f"Query generation error: {str(e)}")]}
 
-class MasterReportNode(BaseNode):
-    """MasterReport temp tabloları oluşturma node'u - SRP"""
+class FinalAnswerAgent(BaseAgent):
+    """Final answer formatting agent"""
     
     def __init__(self):
-        super().__init__("MasterReportNode")
-        self.master_report_sql = self._get_master_report_sql()
+        super().__init__("FinalAnswerAgent", tools=[])
     
-    def _get_master_report_sql(self) -> str:
-        """MasterReport için hazır SQL kodunu döndür"""
-        return """
-        -- MasterReport Query Merged
-        SELECT  
-            D.Id AS DocumentId,
-            D.BranchId,
-            D.BusinessId,
-            D.DocumentTypeId,
-            D.DocumentKindId,
-            D.CashierId,
-            D.UserId,
-            D.Status AS DocumentStatus,
-            D.Date,
-            D.SpecialCode1 COLLATE SQL_Latin1_General_CP1_CI_AS AS TableNo,
-            D.CustomerId,
-            D.CustomerName COLLATE SQL_Latin1_General_CP1_CI_AS AS CustomerName,
-            D.SpecialCode3 COLLATE SQL_Latin1_General_CP1_CI_AS AS TableCustomerNumber,
-            0 AS IsTableActive, 
-            
-            --DocumentDetails
-            DD.Id AS DocumentDetailId,
-            DD.ProductId,
-            DD.WaybillId,
-            DD.BillId,
-            DD.VoucherId,
-            ISNULL(DD.Quantity, 0) AS Quantity,
-            ISNULL(DD.RowAmount, 0) AS RowAmount,
-            ISNULL(DD.DiscountAmountTotal, 0) AS DiscountAmountTotal, 
-            DD.IsTreatWasteCancel, 
-            DD.ProductUnitId, 
-            DD.UpdatedAt, 
-            DD.UpdatedUserId, 
-            DATEPART(DW, DD.Maturity) AS DayOfWeek, 
-            DATEPART(HOUR, DD.Maturity) AS Hour, 
-            DD.PurchasePriceWithTax,
-            DD.Description1,
-            
-            --DocumentTypes
-            DT.Name AS DocumentTypeName,
-            DT.IsReturn AS DocumentTypeIsReturn
-        INTO #Documents
-        FROM 
-            Documents D WITH (NOLOCK)
-            LEFT JOIN 
-                DocumentDetails DD ON 
-                    CASE 
-                        WHEN ISNULL(DD.WaybillId, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000' 
-                             AND ISNULL(DD.BillId, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000'
-                        THEN ISNULL(DD.VoucherId, '00000000-0000-0000-0000-000000000000') 
-                        WHEN ISNULL(DD.BillId, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000' 
-                        THEN ISNULL(DD.WaybillId, '00000000-0000-0000-0000-000000000000') 
-                        ELSE ISNULL(DD.BillId, '00000000-0000-0000-0000-000000000000') 
-                    END = D.Id
-            LEFT JOIN 
-                DocumentTypes DT ON D.DocumentTypeId = DT.Id 
-        WHERE 
-            D.Status = 1
-            AND DD.Status = 1
-            AND DT.Status = 1
-            AND DT.JoinType IN (1, 2, 3);
-
-        SELECT  
-            D.Id AS DocumentId,
-            D.BranchId,
-            D.BusinessId,
-            D.DocumentTypeId,
-            D.DocumentKindId,
-            D.CashierId,
-            D.UserId,
-            D.Status AS DocumentStatus,
-            D.Date,
-            D.SpecialCode1 COLLATE SQL_Latin1_General_CP1_CI_AS AS TableNo,
-            D.CustomerId,
-            D.CustomerName COLLATE SQL_Latin1_General_CP1_CI_AS AS CustomerName,
-            D.SpecialCode3 COLLATE SQL_Latin1_General_CP1_CI_AS AS TableCustomerNumber,
-            D.IsTableActive, 
-            
-            --TempDocumentDetails
-            DD.Id AS DocumentDetailId,
-            DD.ProductId,
-            DD.WaybillId,
-            DD.BillId,
-            DD.VoucherId,
-            ISNULL(DD.Quantity, 0) AS Quantity,
-            ISNULL(DD.RowAmount, 0) AS RowAmount,
-            ISNULL(DD.DiscountAmountTotal, 0) AS DiscountAmountTotal, 
-            DD.IsTreatWasteCancel, 
-            DD.ProductUnitId, 
-            DD.UpdatedAt, 
-            DD.UpdatedUserId, 
-            DATEPART(DW, DD.Maturity) AS DayOfWeek, 
-            DATEPART(HOUR, DD.Maturity) AS Hour, 
-            DD.PurchasePriceWithTax,
-            DD.Description1,
-            
-            --DocumentTypes
-            CAST(NULL AS NVARCHAR(100)) AS DocumentTypeName,
-            CAST(NULL AS BIT) AS DocumentTypeIsReturn
-        INTO #TempDocuments
-        FROM 
-            TempDocuments D WITH (NOLOCK)
-        LEFT JOIN 
-            TempDocumentDetails DD ON 
-                CASE 
-                    WHEN ISNULL(WaybillId, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000' 
-                         AND ISNULL(BillId, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000'
-                    THEN ISNULL(VoucherId, '00000000-0000-0000-0000-000000000000') 
-                    WHEN ISNULL(BillId, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000' 
-                    THEN ISNULL(WaybillId, '00000000-0000-0000-0000-000000000000') 
-                    ELSE ISNULL(BillId, '00000000-0000-0000-0000-000000000000') 
-                END = D.Id
-        WHERE 1=1;
-
-        SELECT * INTO #UnionDocuments FROM (
-            SELECT * FROM #Documents
-            UNION ALL
-            SELECT * FROM #TempDocuments
-        ) AS CombinedData;
-
-        SELECT  
-            Id, 
-            CONCAT(FirstName, ' ', LastName) AS FirstLastName 
-        INTO #Users
-        FROM 
-            Users WITH (NOLOCK)
-        WHERE 1=1 
-            AND Status = 1;
-
-        SELECT  
-            P.Id AS ProductId, 
-            P.Name AS ProductName, 
-            C.Id AS CategoryId, 
-            C.Name AS CategoryName 
-        INTO #ProductCategory
-        FROM 
-            Products P WITH (NOLOCK)
-        LEFT JOIN 
-            ProductCategories PC WITH (NOLOCK) ON P.Id = PC.ProductId
-        LEFT JOIN 
-            Categories C WITH (NOLOCK) ON PC.CategoryId = C.Id
-        WHERE 
-            1 = 1 
-            AND PC.Status = 1 
-            AND P.Status = 1
-            AND C.Status = 1;
-
-        SELECT 
-            --İşletme - şube
-            BS.Name AS İşletme_Adı,
-            B.Name AS Şube_Adı,
-            CS.Name AS Kasa_Adı,
-            D.TableNo AS Masa_Adı,
-            D.CustomerName AS Cari_Adı,
-            IB.GroupName AS Şube_Grup_Adı,
-            IB.BusinessType AS İşletme_Tipi,
-            CTY.Name AS Şube_Şehir_Adı,
-            TWN.Name AS Şube_İlçe_Adı,
-            
-            --Adisyon Bilgileri
-            D.DocumentId AS Adisyon_Id,
-            D.Date AS Adisyon_Tarihi,
-            DK.Name AS Belge_Nevi_Adı,
-            D.DocumentTypeName AS Belge_Tipi_Adı,
-            D.DocumentTypeIsReturn AS Iade_Belgesi_mi,
-            D.DayOfWeek AS Haftanın_Günü,
-            D.Hour AS Saat,
-            
-            --Adisyon Detay Bilgileri
-            D.DocumentDetailId AS Adisyon_Detay_Id,
-            PC.ProductName AS Ürün_Adı,
-            D.Quantity AS Miktar,
-            D.RowAmount AS Ürün_Tutarı,
-            D.DiscountAmountTotal AS Ürüne_Uygulanan_İndirim_Tutarı,
-            PC.CategoryName AS Ürün_Kategori_Adı,
-            UN.Name AS Ürün_Birim_Adı,
-            D.IsTreatWasteCancel AS Ikram_Zayi_İptal_Mi
-        INTO #MasterReportTable
-        FROM 
-            #UnionDocuments D
-        LEFT JOIN 
-            Branches B ON D.BranchId = B.Id AND B.Status = 1
-        LEFT JOIN 
-            #ProductCategory PC ON D.ProductId = PC.ProductId
-        LEFT JOIN 
-            DocumentKinds DK ON D.DocumentKindId = DK.Id AND DK.Status = 1
-        LEFT JOIN 
-            #Users U ON D.UserId = U.Id
-        LEFT JOIN 
-            ProductUnits PU ON D.ProductUnitId = PU.Id AND PU.Status = 1
-        LEFT JOIN 
-            Units UN ON PU.UnitId = UN.Id AND UN.Status = 1
-        LEFT JOIN 
-            Cashiers CS ON D.CashierId = CS.Id AND CS.Status = 1
-        LEFT JOIN 
-            IntegrationBranches IB ON B.Id = IB.DefaultBranchId AND IB.Status = 1
-        LEFT JOIN 
-            Cities CTY ON B.CityId = CTY.Id AND CTY.Status = 1
-        LEFT JOIN 
-            Towns TWN ON B.TownId = TWN.Id AND TWN.Status = 1
-        LEFT JOIN 
-            #Users DDUpdetedUser ON D.UpdatedUserId = DDUpdetedUser.Id
-        LEFT JOIN 
-            Businesses BS ON D.BusinessId = BS.Id AND BS.Status = 1
-        WHERE 1=1;
-        """
-    
-    def execute(self, state: State) -> Dict[str, Any]:
-        self.log_debug("Creating MasterReport temp tables")
+    def invoke(self, state: Text2SQLState, config=None) -> Dict[str, Any]:
+        self.logger.info("Creating final answer")
         messages = state["messages"]
+        report_module = state.get("report_module", "dynamicreport")
+        user_parameters = state.get("user_parameters", UserParameters())
+        relevant_tables = state.get("relevant_tables", [])
+        generated_sql = state.get("generated_sql", "")
+        query_result = state.get("query_result", "")
         
-        response = AIMessage(
-            content="Creating MasterReport temp tables for advanced reporting.",
-            tool_calls=[{
-                "name": "db_query_tool",
-                "args": {"query": self.master_report_sql},
-                "id": "master_report_setup_call",
-            }]
-        )
+        # Convert dict to UserParameters if needed
+        if isinstance(user_parameters, dict):
+            user_parameters = UserParameters(**user_parameters)
         
-        return {"messages": messages + [response]}
-
-
-class FixQueryNode(BaseNode):
-    """SQL hata düzeltme node'u - SRP"""
-    
-    def __init__(self, llm, tools):
-        super().__init__("FixQueryNode")
-        self.fix_query_model = self._create_fix_query_model(llm, tools)
-    
-    def _create_fix_query_model(self, llm, tools):
-        """Query düzeltme model oluştur"""
-        fix_query_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a MSSQL expert specialized in fixing SQL errors.
-
-You will receive:
-1. The original SQL query that failed
-2. The error message from the database
-
-Your task:
-- Analyze the error message carefully
-- Fix the SQL query based on the error
-- Common MSSQL errors to watch for:
-  * Syntax errors (missing commas, parentheses, etc.)
-  * Column name errors (check exact column names)
-  * Table name errors (check exact table names) 
-  * Data type mismatches
-  * JOIN syntax errors
-  * WHERE clause errors
-  * Aggregate function errors
-
-Generate the corrected SQL query and IMMEDIATELY execute it using db_query_tool."""),
-            ("placeholder", "{messages}")
-        ])
+        user_question = StateManager.get_user_question(messages)
         
-        return fix_query_prompt | llm.bind_tools([
-            tool for tool in tools if tool.name == "db_query_tool"
-        ], tool_choice="required")
-    
-    def execute(self, state: State) -> Dict[str, Any]:
-        self.log_debug("Fixing SQL query error")
-        messages = state["messages"]
-        
-        # Hata mesajını ve orijinal query'yi bul
-        error_found = False
-        for msg in reversed(messages):
-            if hasattr(msg, 'content') and "Error:" in str(msg.content):
-                error_found = True
-                break
-        
-        if error_found:
-            response = self.fix_query_model.invoke({"messages": messages})
-            self.log_debug(f"Fix query model response with {len(getattr(response, 'tool_calls', []))} tool calls")
-            return {"messages": messages + [response]}
-        else:
-            response = AIMessage(content="No SQL error found to fix.")
-            return {"messages": messages + [response]}
-
-
-class FinalAnswerNode(BaseNode):
-    """Final cevap node'u - SRP"""
-    
-    def __init__(self):
-        super().__init__("FinalAnswerNode")
-        self.message_extractor = MessageExtractor()
-    
-    def execute(self, state: State) -> Dict[str, Any]:
-        self.log_debug("Creating final answer")
-        messages = state["messages"]
-        
-        # Kullanıcı sorusunu al
-        user_question = self.message_extractor.get_last_user_question(messages)
-        
-        # Query sonucunu bul
-        query_result, executed_query = self.message_extractor.find_tool_result(messages, "call_")
-        
-        if query_result and not query_result.startswith("Error:") and query_result != "":
-            final_text = f"""✅ **Query Başarıyla Çalıştırıldı!**
+        if query_result and not query_result.startswith("Error:"):
+            self.logger.info("Creating successful result")
+            
+            final_text = f"""✅ **{report_module.title()} Raporu Başarıyla Oluşturuldu!**
 
 📋 **Sorunuz:** {user_question}
 
+📊 **Rapor Modülü:** {report_module.title()}
+
+📋 **AI Seçimi:** {', '.join(relevant_tables) if relevant_tables else 'Belirlenmedi'}
+
+⚙️ **Parametreler:**
+- Limit: {user_parameters.limit}
+- Gruplama: {', '.join(user_parameters.group_by_fields) if user_parameters.group_by_fields else 'Yok'}
+- Sıralama: {', '.join(user_parameters.order_by_fields) if user_parameters.order_by_fields else 'Varsayılan'}
+
 🔍 **Çalıştırılan SQL:**
 ```sql
-{executed_query}
+{generated_sql}
 ```
 
 📊 **Sonuçlar:**
 {query_result}
 
-💡 **Özet:** Sorgunuz başarıyla çalıştırıldı ve sonuçlar yukarıda görüntülendi."""
+💡 **Özet:** AI-driven analiz ile rapor başarıyla oluşturuldu."""
         else:
-            final_text = f"""❌ **Query Hatası**
+            self.logger.error("Creating error result")
+            final_text = f"""❌ **Rapor Oluşturma Hatası**
 
 📋 **Sorunuz:** {user_question}
+📊 **Rapor Modülü:** {report_module.title()}
 
 Query sonucu bulunamadı veya hata oluştu. Lütfen tekrar deneyin."""
         
         response = AIMessage(content=final_text)
-        self.log_debug(f"Final answer created for question: {user_question[:50]}...")
-        return {"messages": messages + [response]}
-    """Final cevap node'u - SRP"""
-    
-    def __init__(self):
-        super().__init__("FinalAnswerNode")
-        self.message_extractor = MessageExtractor()
-    
-    def execute(self, state: State) -> Dict[str, Any]:
-        self.log_debug("Creating final answer")
-        messages = state["messages"]
-        
-        # Kullanıcı sorusunu al
-        user_question = self.message_extractor.get_last_user_question(messages)
-        
-        # Query sonucunu bul
-        query_result, executed_query = self.message_extractor.find_tool_result(messages, "call_")
-        
-        if query_result and not query_result.startswith("Error:") and query_result != "":
-            final_text = f"""✅ **Query Başarıyla Çalıştırıldı!**
-
-📋 **Sorunuz:** {user_question}
-
-🔍 **Çalıştırılan SQL:**
-```sql
-{executed_query}
-```
-
-📊 **Sonuçlar:**
-{query_result}
-
-💡 **Özet:** Sorgunuz başarıyla çalıştırıldı ve sonuçlar yukarıda görüntülendi."""
-        else:
-            final_text = f"""❌ **Query Hatası**
-
-📋 **Sorunuz:** {user_question}
-
-Query sonucu bulunamadı veya hata oluştu. Lütfen tekrar deneyin."""
-        
-        response = AIMessage(content=final_text)
-        self.log_debug(f"Final answer created for question: {user_question[:50]}...")
         return {"messages": messages + [response]}
 
-
-# SOLID Principle 3: Liskov Substitution Principle (LSP)
-class RouterInterface(ABC):
-    """Router'lar için interface - LSP"""
-    
-    @abstractmethod
-    def route(self, state: State) -> str:
-        pass
-
-
-class SimpleRouter(RouterInterface):
-    """Basit routing implementasyonu - LSP"""
-    
-    def route(self, state: State) -> str:
-        messages = state["messages"]
-        
-        print(f"[DEBUG] Simple routing, messages: {len(messages)}")
-        
-        # MasterReport isteği mi kontrol et
-        if len(messages) >= 1:
-            user_question = MessageExtractor.get_last_user_question(messages)
-            if TableSelector.is_master_report_request(user_question):
-                print("[DEBUG] MasterReport request detected")
-                
-                # MasterReport setup yapıldı mı kontrol et
-                master_report_setup = any(
-                    hasattr(msg, 'tool_call_id') and "master_report_setup" in str(msg.tool_call_id) 
-                    for msg in messages
-                )
-                
-                if not master_report_setup:
-                    print("[DEBUG] → master_report_setup")
-                    return "master_report_setup"
-        
-        # Son 2 mesajı kontrol et
-        if len(messages) >= 2:
-            last_msg = messages[-1]
-            prev_msg = messages[-2] if len(messages) > 1 else None
-            
-            # Son mesaj ToolMessage ise
-            if hasattr(last_msg, 'tool_call_id'):
-                tool_call_id = str(last_msg.tool_call_id)
-                print(f"[DEBUG] Found tool message with ID: {tool_call_id}")
-                
-                if "list_tables" in tool_call_id:
-                    print("[DEBUG] → get_schema")
-                    return "get_schema"
-                elif "schema" in tool_call_id:
-                    print("[DEBUG] → execute_query")
-                    return "execute_query"
-                elif "master_report_setup" in tool_call_id:
-                    print("[DEBUG] → execute_query (MasterReport)")
-                    return "execute_query"
-                elif "call_" in tool_call_id:  # OpenAI tool call ID
-                    # SQL hatası var mı kontrol et
-                    if hasattr(last_msg, 'content') and "Error:" in str(last_msg.content):
-                        print("[DEBUG] → fix_query (SQL Error detected)")
-                        return "fix_query"
-                    else:
-                        print("[DEBUG] → final_answer")
-                        return "final_answer"
-            
-            # Önceki mesajda tool call varsa
-            if prev_msg and hasattr(prev_msg, 'tool_calls') and prev_msg.tool_calls:
-                for tool_call in prev_msg.tool_calls:
-                    if tool_call.get('name') == "db_query_tool":
-                        # SQL hatası var mı kontrol et
-                        if hasattr(last_msg, 'content') and "Error:" in str(last_msg.content):
-                            print("[DEBUG] → fix_query (SQL Error in tool result)")
-                            return "fix_query"
-                        else:
-                            print("[DEBUG] → final_answer (db_query_tool found)")
-                            return "final_answer"
-        
-        print("[DEBUG] → end")
-        return "end"
-
-
-# SOLID Principle 4: Interface Segregation Principle (ISP)
-class ToolManagerInterface(ABC):
-    """Tool yönetimi için interface - ISP"""
-    
-    @abstractmethod
-    def get_tools(self) -> List:
-        pass
-
-
-class SQLToolManager(ToolManagerInterface):
-    """SQL araçları yönetimi - ISP"""
-    
+# ================================
+# TOOL MANAGER
+# ================================
+class SQLToolManager:
     def __init__(self, db, llm):
         self.db = db
         self.llm = llm
+        self.logger = log.get(module="text2sql", component="tool_manager")
     
     def get_tools(self) -> List:
+        self.logger.info("Loading SQL tools")
         langgraph_tools = LangGraphSQLTools(self.db, self.llm)
         custom_tools = CustomSQLTools(self.db)
-        return langgraph_tools.get_basic_tools() + custom_tools.get_custom_tools()
+        tools = langgraph_tools.get_basic_tools() + custom_tools.get_custom_tools()
+        self.logger.info("SQL tools loaded", count=len(tools))
+        return tools
 
-
-# SOLID Principle 5: Dependency Inversion Principle (DIP)
-class NodeFactory:
-    """Node'ları oluşturma sorumluluğu - DIP"""
-    
-    @staticmethod
-    def create_nodes(llm, tools) -> Dict[str, NodeInterface]:
-        return {
-            "list_tables": ListTablesNode(),
-            "get_schema": GetSchemaNode(),
-            "master_report_setup": MasterReportNode(),
-            "execute_query": ExecuteQueryNode(llm, tools),
-            "fix_query": FixQueryNode(llm, tools),
-            "final_answer": FinalAnswerNode()
-        }
-
-
+# ================================
+# SIMPLE TEXT2SQL GRAPH - Agent Based
+# ================================
 @register_graph("text2sql")
 class Text2SQLGraph(BaseGraph):
-    """SOLID prensiplerine uygun Text2SQL Graph - DIP"""
+    """Simple & Clean Text2SQL Graph - LangGraph Native Agents"""
     
-    def __init__(self, llm, db = None):
-        super().__init__(llm=llm, state_class=State)
-
+    def __init__(self, llm, db=None):
+        super().__init__(llm=llm, state_class=Text2SQLState)
+        self.logger = log.get(module="text2sql", component="graph")
+        
         if db is None:
             db = SQLDatabase.from_uri(config.database.uri)
-
-        self.db = db
         
-        # Dependency Injection - DIP
+        self.db = db
         self.tool_manager = SQLToolManager(db, llm.get_chat())
-        self.tools = self.tool_manager.get_tools()
-        self.nodes = NodeFactory.create_nodes(llm.get_chat(), self.tools)
-        self.router = SimpleRouter()
-        self.tool_node = ToolNode(self.tools)
+        self.tools = self.tool_manager.get_tools() + [analyze_user_query_for_tables]
+        
+        self._create_agents()
+        
+        self.logger.info("Text2SQL Graph initialized", 
+                        tools_count=len(self.tools),
+                        agents=list(self.agents.keys()))
+    
+    def _create_agents(self):
+        """Create all agents with their specific tools"""
+        self.agents = {
+            "initialization": InitializationAgent(),
+            "table_listing": TableListingAgent(self.tools),
+            "schema_analysis": SchemaAnalysisAgent(self.tools),
+            "schema_retrieval": SchemaRetrievalAgent(self.tools),
+            "query_generation": QueryGenerationAgent(self.llm.get_chat(), self.tools),
+            "final_answer": FinalAnswerAgent(),
+        }
     
     def build_graph(self):
-        """Graph'ı oluştur - Temiz ve SOLID"""
+        """Build Simple Agent-Based Graph - Direct Linear Flow"""
+        self.logger.info("Building agent-based Text2SQL graph")
+        
         memory = MemorySaver()
-        graph = StateGraph(State)
+        graph = StateGraph(Text2SQLState)
         
-        # Node'ları ekle
-        for node_name, node_instance in self.nodes.items():
-            graph.add_node(f"step_{node_name}", node_instance.execute)
+        # Add all agents as nodes
+        for agent_name, agent_instance in self.agents.items():
+            graph.add_node(agent_name, agent_instance)
         
-        graph.add_node("tools", self.tool_node)
+        # ================================
+        # SIMPLE LINEAR AGENT FLOW
+        # ================================
         
-        # Edge'leri ekle
-        graph.add_edge(START, "step_list_tables")
-        graph.add_edge("step_list_tables", "tools")
-        graph.add_edge("step_get_schema", "tools")
-        graph.add_edge("step_master_report_setup", "tools")  # MasterReport setup edge
-        graph.add_edge("step_execute_query", "tools")
-        graph.add_edge("step_fix_query", "tools")  # Fix query edge
+        graph.add_edge(START, "initialization")
+        graph.add_edge("initialization", "table_listing")
+        graph.add_edge("table_listing", "schema_analysis") 
+        graph.add_edge("schema_analysis", "schema_retrieval")
+        graph.add_edge("schema_retrieval", "query_generation")
+        graph.add_edge("query_generation", "final_answer")
+        graph.add_edge("final_answer", END)
         
-        # Routing
-        graph.add_conditional_edges(
-            "tools",
-            self.router.route,
-            {
-                "get_schema": "step_get_schema",
-                "master_report_setup": "step_master_report_setup",
-                "execute_query": "step_execute_query",
-                "fix_query": "step_fix_query",  # Bu satır eksikti!
-                "final_answer": "step_final_answer",
-                "end": END
-            }
+        compiled_graph = graph.compile(
+            checkpointer=memory,
+            name="agent_text2sql_graph"
         )
         
-        graph.add_edge("step_final_answer", END)
-        
-        return graph.compile(checkpointer=memory)
+        self.logger.info("Agent-based Text2SQL graph compiled successfully")
+        return compiled_graph
