@@ -5,8 +5,8 @@ from src.models.models import LLM, State
 from langgraph.checkpoint.memory import MemorySaver
 
 
-@register_graph("main")
-class MainGraph(BaseGraph):
+@register_graph("chat")
+class ChatGraph(BaseGraph):
     """
     Main Graph for the chatbot workflow.
     This graph defines the structure and flow of the chatbot interactions.
@@ -29,7 +29,7 @@ class MainGraph(BaseGraph):
         graph_builder.add_node("chatbot", self.chatbot)
         graph_builder.add_edge(START, "chatbot")
         graph_builder.add_edge("chatbot", END)
-        return graph_builder.compile(name = "main_graph", checkpointer=memory)
+        return graph_builder.compile(name = "chat_graph", checkpointer=memory)
 
 
 

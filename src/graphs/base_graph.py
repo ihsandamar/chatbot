@@ -11,10 +11,14 @@ class BaseGraph(ABC):
     en azından build_graph() metodunu override etmelidir.
     """
 
-    def __init__(self, llm: LLM, state_class: Type):
+    def __init__(self, llm: LLM, state_class: Type, memory: MemorySaver = None):
         self.llm = llm
         self.state_class = state_class
-        self.memory = MemorySaver()  # default belleği burada tutar, istenirse override edilebilir
+
+        if memory is not None:
+            self.memory = memory
+        else:
+            self.memory = MemorySaver()  # default belleği burada tutar, istenirse override edilebilir
 
     @abstractmethod
     def build_graph(self):

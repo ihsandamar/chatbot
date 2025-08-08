@@ -14,6 +14,7 @@ from typing_extensions import NotRequired
 
 from src.graphs.base_graph import BaseGraph
 from src.graphs.registry import register_graph
+from src.models.models import LLM
 from src.tools.langgraph_sql_tools import LangGraphSQLTools
 from src.tools.custom_sql_tools import CustomSQLTools
 from src.services.app_logger import log
@@ -920,7 +921,7 @@ class SQLToolManager:
 class Text2SQLGraph(BaseGraph):
     """Enhanced Text2SQLGraph with intelligent table selection"""
 
-    def __init__(self, llm, db=None):
+    def __init__(self, llm: LLM, db=None):
         super().__init__(llm=llm, state_class=TestState)
         self.logger = log.get(module="test_graph", component="graph")
         
@@ -942,13 +943,13 @@ class Text2SQLGraph(BaseGraph):
         self.agents = {
             "initialization": InitializationAgent(),
             "table_listing": TableListingAgent(self.tools),
-            "relevant_tables": RelevantTablesAgent(self.llm.get_chat()),
-            "schema": SchemaAgent(self.tools),
-            "query_parameters": QueryParameterAgent(self.llm.get_chat()),
+            "relevant_tables_agent": RelevantTablesAgent(self.llm.get_chat()),
+            "schema_agent": SchemaAgent(self.tools),
+            "query_parameters_agent": QueryParameterAgent(self.llm.get_chat()),
             "sql_generator": SQLGeneratorAgent(self.llm.get_chat()),
             "sql_validator": SQLValidatorAgent(),
             "sql_executor": SQLExecutorAgent(self.tools),
-            "fix_sql": FixSQLAgent(self.llm.get_chat()),
+            "fix_sql_agent": FixSQLAgent(self.llm.get_chat()),
         }
         
         # Create router
@@ -971,10 +972,10 @@ class Text2SQLGraph(BaseGraph):
         
         graph.add_edge(START, "initialization")
         graph.add_edge("initialization", "table_listing")
-        graph.add_edge("table_listing", "relevant_tables")
-        graph.add_edge("relevant_tables", "schema")
-        graph.add_edge("schema", "query_parameters")
-        graph.add_edge("query_parameters", "sql_generator")
+        graph.add_edge("table_listing", "relevant_tables_agent")
+        graph.add_edge("relevant_tables_agent", "schema_agent")
+        graph.add_edge("schema_agent", "query_parameters_agent")
+        graph.add_edge("query_parameters_agent", "sql_generator")
         graph.add_edge("sql_generator", "sql_validator")
         graph.add_edge("sql_validator", "sql_executor")
         
@@ -983,17 +984,17 @@ class Text2SQLGraph(BaseGraph):
             "sql_executor",
             self.sql_router.route,
             {
-                "fix_sql": "fix_sql",
+                "fix_sql_agent": "fix_sql_agent",
                 "end": END
             }
         )
         
         # Fix SQL agent goes to END
-        graph.add_edge("fix_sql", END)
+        graph.add_edge("fix_sql_agent", END)
         
         compiled_graph = graph.compile(
             checkpointer=memory,
-            name="enhanced_text2sql_graph"
+            name="text2sql_graph"
         )
 
         self.logger.info("Enhanced text2sql graph compiled successfully with error handling and SQL fixing")

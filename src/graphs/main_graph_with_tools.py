@@ -9,8 +9,8 @@ from src.tools.assistance_tools import AssistanceToolkit
 from src.tools.math_tools import MathToolkit
 from src.tools.date_tool import DateToolkit
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.prebuilt import create_react_agent
-from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt.chat_agent_executor import create_react_agent
+from langgraph.prebuilt.tool_node import ToolNode
 from src.services.app_logger import log
 
 

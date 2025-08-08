@@ -1,14 +1,14 @@
 from src.graphs.graph_repository import GraphRepository
 from src.graphs.text2sql_graph import Text2SQLGraph
 from src.models.models import LLM
-from src.graphs.main_graph import MainGraph
+from src.graphs.chat_graph import ChatGraph
 from src.services.config_loader import ConfigLoader
 from langchain_community.utilities import SQLDatabase
-
+from src.graphs.erp_main_graph import ERPMainGraph
 
 # TODO: Add Dynamic Module Discovery and Loading  
 
-def graph(name: str) -> MainGraph:
+def graph(name: str) -> ChatGraph:
     """
     Returns a graph object based on the specified name.
     
@@ -44,3 +44,17 @@ def main_graph_with_tools():
 def supervisor_graph():
     return graph("supervisor").build_graph()
 
+
+def supervisor2_graph():
+    return graph("supervisor2").build_graph()
+
+
+# 🔥 Yeni basit ERP graph
+def erp_main_graph():
+    return graph("erp_main").build_graph()
+
+
+
+def supervisor_test_graph():
+    return graph("supervisor_test").build_graph()
+    

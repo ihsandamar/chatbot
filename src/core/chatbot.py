@@ -1,7 +1,7 @@
 
 from typing import List, Tuple
 from src.graphs.base_graph import BaseGraph
-from src.graphs.main_graph import MainGraph
+from src.graphs.chat_graph import ChatGraph
 from src.models.models import LLM
 
 

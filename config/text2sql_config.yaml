@@ -17,9 +17,7 @@ database:
   pool_timeout: 30
   pool_recycle: 3600
 
-chatbot:
-  graph_type: text2sql
-  thread_id: "text2sql_session"
+
 
 # Text2SQL specific settings
 text2sql:

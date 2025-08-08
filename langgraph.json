@@ -9,10 +9,11 @@
 
   ],
   "graphs": {
-      "main_graph": "src/graphs/graph_entrypoints.py:main_graph",
-      "main_graph_with_tools": "src/graphs/graph_entrypoints.py:main_graph_with_tools",
-      "text2sql_graph": "src/graphs/graph_entrypoints.py:text2sql_graph",
+
+      "main": "src/graphs/graph_entrypoints.py:main_graph",
+      "erp_main": "src/graphs/graph_entrypoints.py:erp_main_graph",
       "supervisor": "src/graphs/graph_entrypoints.py:supervisor_graph"
+
   },
   "env": "config/.env"
 }
