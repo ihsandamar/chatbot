@@ -43,4 +43,4 @@ def run_gradio(chatbot: Chatbot):
         ).then(lambda: gr.Textbox(interactive=True),
                None, [user_input], queue=False)
 
-    demo.launch(server_name="0.0.0.0", share=False)
+    demo.launch(server_name="0.0.0.0", share=False, pwa=True)
