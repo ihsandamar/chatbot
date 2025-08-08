@@ -14,7 +14,7 @@ from typing_extensions import NotRequired
 
 from src.graphs.base_graph import BaseGraph
 from src.graphs.registry import register_graph
-from src.models.models import LLM
+from src.models.models import LLM, State
 from src.tools.langgraph_sql_tools import LangGraphSQLTools
 from src.tools.custom_sql_tools import CustomSQLTools
 from src.services.app_logger import log
@@ -59,26 +59,6 @@ class Table(BaseModel):
     relations: List[str] = Field(default=[], description="Table relations") 
     schema: Optional[str] = Field(default="", description="CREATE TABLE statement")
 
-# ================================
-# STATE DEFINITION
-# ================================
-class BaseState(TypedDict):
-    pass
-
-class TestState(BaseState):
-    """TestState for the enhanced test graph"""
-    user_query: NotRequired[str]  # User's question
-    all_tables: NotRequired[List[str]]  # All database tables
-    relevant_tables: NotRequired[List[Table]]  # Tables relevant to the user query with schema
-    table_schemas: NotRequired[str]  # Raw schema information
-    query_parameters: NotRequired[QueryParameters]  # Extracted SQL query parameters
-    generated_sql: NotRequired[str]  # Generated SQL query
-    validated_sql: NotRequired[str]  # Validated SQL query
-    is_valid: NotRequired[bool]  # Whether SQL passed validation
-    sql_result: NotRequired[str]  # SQL execution result
-    is_error: NotRequired[bool]  # Whether there was an execution error
-    error_message: NotRequired[str]  # Error message if execution failed
-    fixed_sql: NotRequired[str]  # Fixed SQL after error correction
 
 class SQLExecutionRouter:
     """Router to decide whether to fix SQL or end the flow"""
@@ -86,7 +66,7 @@ class SQLExecutionRouter:
     def __init__(self):
         self.logger = log.get(module="test_graph", component="sql_router")
     
-    def route(self, state: TestState) -> str:
+    def route(self, state: State) -> str:
         """Route based on SQL execution result"""
         is_error = state.get("is_error", False)
         
@@ -111,7 +91,7 @@ class BaseAgent(Runnable, ABC):
         self.logger = log.get(module="test_graph", agent=name)
     
     @abstractmethod
-    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+    def invoke(self, state: State, config=None) -> Dict[str, Any]:
         """LangGraph Runnable invoke method"""
         pass
     
@@ -138,7 +118,7 @@ class InitializationAgent(BaseAgent):
     def __init__(self):
         super().__init__("InitializationAgent", tools=[])
     
-    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+    def invoke(self, state: State, config=None) -> Dict[str, Any]:
         self.logger.info("Initializing TestGraph state")
         
         # Set a sample user query if not present
@@ -167,7 +147,7 @@ class TableListingAgent(BaseAgent):
         list_tools = [t for t in tools if t.name == "sql_db_list_tables"]
         super().__init__("TableListingAgent", tools=list_tools)
     
-    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+    def invoke(self, state: State, config=None) -> Dict[str, Any]:
         self.logger.info("Listing database tables")
         
         try:
@@ -238,7 +218,7 @@ Be VERY generous in your selection - missing a table is worse than including an 
         # Create the chain
         self.table_chain = self.prompt | self.llm_with_tools | self.output_parser
     
-    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+    def invoke(self, state: State, config=None) -> Dict[str, Any]:
         self.logger.info("Finding relevant tables using LLM")
         
         all_tables = state.get("all_tables", [])
@@ -343,7 +323,7 @@ class SchemaAgent(BaseAgent):
             table_obj.schema = raw_schema
             return table_obj
     
-    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+    def invoke(self, state: State, config=None) -> Dict[str, Any]:
         self.logger.info("Getting schema for relevant tables")
         
         relevant_tables = state.get("relevant_tables", [])
@@ -441,7 +421,7 @@ Use ONLY the available column names from the table schemas provided above.
         # Create the chain
         self.parameter_chain = self.prompt | self.llm_with_tools | self.output_parser
     
-    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+    def invoke(self, state: State, config=None) -> Dict[str, Any]:
         self.logger.info("Extracting query parameters from user prompt")
         
         user_query = state.get("user_query", "")
@@ -567,7 +547,7 @@ Generate ONLY a valid MSSQL SELECT statement. No explanations or additional text
             "limit": str(query_parameters.limit) if query_parameters.limit else "None"
         }
     
-    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+    def invoke(self, state: State, config=None) -> Dict[str, Any]:
         self.logger.info("Generating SQL query using AI")
         
         query_parameters = state.get("query_parameters")
@@ -682,7 +662,7 @@ class SQLValidatorAgent(BaseAgent):
         
         return True, "Valid SELECT query"
     
-    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+    def invoke(self, state: State, config=None) -> Dict[str, Any]:
         self.logger.info("Validating generated SQL query")
         
         generated_sql = state.get("generated_sql", "")
@@ -725,7 +705,7 @@ class SQLExecutorAgent(BaseAgent):
         execution_tools = [t for t in tools if t.name == "db_query_tool"]
         super().__init__("SQLExecutorAgent", tools=execution_tools)
     
-    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+    def invoke(self, state: State, config=None) -> Dict[str, Any]:
         self.logger.info("Executing validated SQL query")
         
         validated_sql = state.get("validated_sql", "")
@@ -834,7 +814,7 @@ Generate ONLY a corrected MSSQL SELECT statement. No explanations or additional 
         # Create the chain
         self.fix_chain = self.prompt | self.llm
     
-    def invoke(self, state: TestState, config=None) -> Dict[str, Any]:
+    def invoke(self, state: State, config=None) -> Dict[str, Any]:
         self.logger.info("Fixing SQL execution error using AI")
         
         validated_sql = state.get("validated_sql", "")
@@ -922,7 +902,7 @@ class Text2SQLGraph(BaseGraph):
     """Enhanced Text2SQLGraph with intelligent table selection"""
 
     def __init__(self, llm: LLM, db=None):
-        super().__init__(llm=llm, state_class=TestState)
+        super().__init__(llm=llm, state_class=State)
         self.logger = log.get(module="test_graph", component="graph")
         
         if db is None:
@@ -960,7 +940,7 @@ class Text2SQLGraph(BaseGraph):
         self.logger.info("Building enhanced text2sql graph with SQL error handling and fixing")
         
         memory = MemorySaver()
-        graph = StateGraph(TestState)
+        graph = StateGraph(State)
         
         # Add agents as nodes
         for agent_name, agent_instance in self.agents.items():

@@ -18,7 +18,7 @@ def get_today() -> str:
 
 
 
-@register_graph("supervisor_test")
+@register_graph("supervisor")
 class SupervisorTestGraph(BaseGraph):
     def __init__(self, llm: LLM):
         super().__init__(llm, State)

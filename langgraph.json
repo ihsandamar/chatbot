@@ -9,11 +9,7 @@
 
   ],
   "graphs": {
-
-      "main": "src/graphs/graph_entrypoints.py:main_graph",
-      "erp_main": "src/graphs/graph_entrypoints.py:erp_main_graph",
       "supervisor": "src/graphs/graph_entrypoints.py:supervisor_graph"
-
   },
   "env": "config/.env"
 }

@@ -4,7 +4,6 @@ from src.models.models import LLM
 from src.graphs.chat_graph import ChatGraph
 from src.services.config_loader import ConfigLoader
 from langchain_community.utilities import SQLDatabase
-from src.graphs.erp_main_graph import ERPMainGraph
 
 # TODO: Add Dynamic Module Discovery and Loading  
 
@@ -24,9 +23,6 @@ def graph(name: str) -> ChatGraph:
     repo = GraphRepository(llm=llm)
     return repo.get_raw(name)
 
-def main_graph():
-    return graph("main").build_graph()
-
 
 def text2sql_graph():
     config = ConfigLoader.load_config("config/text2sql_config.yaml")
@@ -37,24 +33,7 @@ def text2sql_graph():
 
 
 
-def main_graph_with_tools():
-    return graph("main_graph_with_tools").build_graph()
-
 
 def supervisor_graph():
     return graph("supervisor").build_graph()
 
-
-def supervisor2_graph():
-    return graph("supervisor2").build_graph()
-
-
-# 🔥 Yeni basit ERP graph
-def erp_main_graph():
-    return graph("erp_main").build_graph()
-
-
-
-def supervisor_test_graph():
-    return graph("supervisor_test").build_graph()
-    
