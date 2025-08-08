@@ -367,7 +367,7 @@ def run_gradio_interface(chatbot: ERPChatbot):
             )
         
         print("🌐 Starting Gradio interface...")
-        demo.launch(share=False, debug=False)
+        demo.launch(server_name="0.0.0.0", share=False, debug=False)
         
     except ImportError:
         print("❌ Gradio not installed. Run: pip install gradio")
