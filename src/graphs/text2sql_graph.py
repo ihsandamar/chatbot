@@ -121,10 +121,34 @@ class InitializationAgent(BaseAgent):
     def invoke(self, state: State, config=None) -> Dict[str, Any]:
         self.logger.info("Initializing TestGraph state")
         
-        # Set a sample user query if not present
-        user_query = state.get("user_query", "Show me all products and their categories")
+        # Extract user query from messages or use existing user_query
+        user_query = state.get("user_query", "")
+        
+        # If no user_query, extract from latest human message
+        if not user_query:
+            messages = state.get("messages", [])
+            for message in reversed(messages):
+                if hasattr(message, 'type') and message.type == "human":
+                    # Extract text content from message
+                    if hasattr(message, 'content'):
+                        if isinstance(message.content, list):
+                            # Handle content array format
+                            for content_part in message.content:
+                                if isinstance(content_part, dict) and content_part.get('type') == 'text':
+                                    user_query = content_part.get('text', '')
+                                    break
+                        elif isinstance(message.content, str):
+                            user_query = message.content
+                        break
+        
+        # Fallback default query
+        if not user_query:
+            user_query = "Show me all products and their categories"
+        
+        self.logger.info("Extracted user query", query=user_query)
         
         return {
+            "messages": state.get("messages", []),  # Preserve existing messages
             "user_query": user_query,
             "all_tables": [],
             "relevant_tables": [],  # List of Table objects
@@ -743,8 +767,13 @@ class SQLExecutorAgent(BaseAgent):
             self.logger.info("SQL executed successfully", 
                            result_length=len(str(result)))
             
+            # Format the result for better display
+            sql_result = str(result)
+            formatted_message = f"SQL query executed successfully!\n\nQuery: {validated_sql}\n\nResult:\n{sql_result}"
+            
             return {
-                "sql_result": str(result),
+                "messages": [AIMessage(content=formatted_message)],
+                "sql_result": sql_result,
                 "is_error": False,
                 "error_message": ""
             }
@@ -870,11 +899,19 @@ Generate ONLY a corrected MSSQL SELECT statement. No explanations or additional 
                            original_length=len(validated_sql),
                            fixed_length=len(fixed_sql))
             
-            return {"fixed_sql": fixed_sql}
+            formatted_message = f"SQL error has been fixed!\n\nOriginal Error: {error_message}\n\nFixed SQL: {fixed_sql}"
+            
+            return {
+                "messages": [AIMessage(content=formatted_message)],
+                "fixed_sql": fixed_sql
+            }
             
         except Exception as e:
             self.logger.error("Failed to fix SQL using AI", error=str(e))
-            return {"fixed_sql": f"-- ERROR: Failed to fix SQL - {str(e)}"}
+            return {
+                "messages": [AIMessage(content=f"ERROR: Failed to fix SQL - {str(e)}")],
+                "fixed_sql": f"-- ERROR: Failed to fix SQL - {str(e)}"
+            }
 
 
 # ================================
@@ -914,9 +951,34 @@ class Text2SQLGraph(BaseGraph):
         
         self._create_agents()
         
+        # Build and store the compiled graph for agent interface
+        self._compiled_graph = None
+        
         self.logger.info("Enhanced TestGraph initialized", 
                         tools_count=len(self.tools),
                         agents=list(self.agents.keys()))
+    
+    # Agent interface for supervisor compatibility
+    def invoke(self, state: State, config=None) -> Dict[str, Any]:
+        """Agent interface - invoke the full text2sql workflow"""
+        try:
+            # Build graph if not already built
+            if self._compiled_graph is None:
+                self._compiled_graph = self.build_graph()
+            
+            # Execute the full text2sql workflow
+            result = self._compiled_graph.invoke(state, config=config)
+            
+            # Return the final state
+            return result
+            
+        except Exception as e:
+            self.logger.error("Text2SQL workflow failed", error=str(e))
+            return {
+                "messages": [AIMessage(content=f"ERROR: Text2SQL workflow failed - {str(e)}")],
+                "is_error": True,
+                "error_message": str(e)
+            }
     
     def _create_agents(self):
         """Create all agents with their specific tools"""

@@ -29,17 +29,25 @@ class SupervisorTestGraph(BaseGraph):
 
     def build_graph(self):
         chat_graph = ChatGraph(self.llm).build_graph()
-        # Ensure text2sql_graph has a name for supervisor
-        text2sql_graph_instance = Text2SQLGraph(self.llm)
-        text2sql_graph = text2sql_graph_instance.build_graph()
+        # Use text2sql_graph instance as agent (not the built graph)
+        text2sql_graph_agent = Text2SQLGraph(self.llm).build_graph()
         supervisor = create_supervisor(
             model=self.llm.get_chat(), 
-            agents=[chat_graph, text2sql_graph], 
+            agents=[chat_graph, text2sql_graph_agent], 
             tools=[get_today],
             prompt=(
-                "You are a team supervisor managing a research expert and a math expert. "
-                "For general prompt, use chat_graph. "
-                "For sql problems, use text2sql_graph."
+                "You are an intelligent customer service supervisor managing specialized support agents. "
+                "Your role is to analyze customer requests and direct them to the most appropriate expert. "
+                "\n"
+                "Available specialists:\n"
+                "- chat_graph: General customer support specialist for conversations, questions, explanations, and assistance\n"
+                "- text2sql_graph: Database query specialist for converting customer requests into SQL queries and retrieving data\n"
+                "\n"
+                "Decision criteria:\n"
+                "- Use chat_graph for: General conversations, product information, troubleshooting, explanations, customer service inquiries\n"
+                "- Use text2sql_graph for: Data retrieval requests, report generation, database queries, when customer asks to 'get data from', 'show me records', 'query database', 'retrieve information from tables'\n"
+                "\n"
+                "Always provide helpful, professional customer service. Be proactive in understanding customer needs."
             )
         )
         memory = MemorySaver()
