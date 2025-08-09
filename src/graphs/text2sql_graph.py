@@ -1,4 +1,4 @@
-# src/graphs/test_graph.py - Enhanced Test Graph with Table Selection
+# src/graphs/text2sql_graph.py - Enhanced Test Graph with Table Selection
 from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Literal, Optional, TypedDict
 from dataclasses import dataclass

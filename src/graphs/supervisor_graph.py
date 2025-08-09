@@ -16,6 +16,42 @@ def get_today() -> str:
     "Return today"
     return datetime.today().strftime('%Y-%m-%d')
 
+@tool
+def get_help_info() -> str:
+    """Provide information about available customer service areas and capabilities"""
+    return """
+🔧 **Customer Service Areas & Capabilities**
+
+📊 **Database & Reporting Services:**
+- Product catalog inquiries (search, filter products)
+- Sales data analysis and reporting
+- Customer data retrieval and management
+- Inventory status and stock level checks
+- Order history and transaction details
+- Performance metrics and analytics
+
+💬 **General Support Services:**
+- Product information and specifications
+- Account assistance and troubleshooting
+- Technical support and guidance
+- Process explanations and how-to help
+- General questions and conversations
+- Feature explanations and tutorials
+
+🎯 **How to Get Help:**
+- For data queries: Ask me to "retrieve", "show", "get data from", "generate report"
+- For general help: Ask questions, request explanations, or start a conversation
+- For service info: Ask "what can you help with?" or "show available services"
+
+Examples:
+✅ "Show me all products in electronics category"
+✅ "Get sales data for last month"  
+✅ "How does the ordering process work?"
+✅ "What are the features of product X?"
+
+I'm here to help make your experience smooth and efficient! 🚀
+    """
+
 
 
 @register_graph("supervisor")
@@ -29,12 +65,11 @@ class SupervisorTestGraph(BaseGraph):
 
     def build_graph(self):
         chat_graph = ChatGraph(self.llm).build_graph()
-        # Use text2sql_graph instance as agent (not the built graph)
         text2sql_graph_agent = Text2SQLGraph(self.llm).build_graph()
         supervisor = create_supervisor(
             model=self.llm.get_chat(), 
             agents=[chat_graph, text2sql_graph_agent], 
-            tools=[get_today],
+            tools=[get_today, get_help_info],
             prompt=(
                 "You are an intelligent customer service supervisor managing specialized support agents. "
                 "Your role is to analyze customer requests and direct them to the most appropriate expert. "
@@ -47,7 +82,11 @@ class SupervisorTestGraph(BaseGraph):
                 "- Use chat_graph for: General conversations, product information, troubleshooting, explanations, customer service inquiries\n"
                 "- Use text2sql_graph for: Data retrieval requests, report generation, database queries, when customer asks to 'get data from', 'show me records', 'query database', 'retrieve information from tables'\n"
                 "\n"
-                "Always provide helpful, professional customer service. Be proactive in understanding customer needs."
+                "Always provide helpful, professional customer service. Be proactive in understanding customer needs.\n"
+                "\n"
+                "Available tools:\n"
+                "- get_help_info: Use when customer asks about available services, capabilities, or 'what can you help with?'\n"
+                "- get_today: Use when current date is needed\n"
             )
         )
         memory = MemorySaver()
