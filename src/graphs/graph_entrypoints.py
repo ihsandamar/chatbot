@@ -1,4 +1,6 @@
 from src.graphs.graph_repository import GraphRepository
+from src.graphs.master_report_graph import ERPSQLChatbot
+
 from src.graphs.text2sql_graph import Text2SQLGraph
 from src.models.models import LLM
 from src.graphs.chat_graph import ChatGraph
@@ -37,3 +39,11 @@ def text2sql_graph():
 def supervisor_graph():
     return graph("supervisor").build_graph()
 
+
+
+def master_report_document_graph():
+    config = ConfigLoader.load_config("config/text2sql_config.yaml")
+    llm = LLM(model=config.llm.model, temperature=config.llm.temperature, api_key=config.llm.api_key)
+    db = SQLDatabase.from_uri(config.database.uri)
+    graph = ERPSQLChatbot(llm=llm, db=db).build_graph()
+    return graph

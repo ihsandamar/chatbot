@@ -18,6 +18,13 @@ class State(TypedDict):
     is_error: NotRequired[bool]  # Whether there was an execution error
     error_message: NotRequired[str]  # Error message if execution failed
     fixed_sql: NotRequired[str]  # Fixed SQL after error correction
+    
+    # Restaurant ERP specific fields
+    detected_intent: NotRequired[str]  # Intent detection result (document/payment)
+    intent_confidence: NotRequired[float]  # Intent detection confidence score
+    intent_reasoning: NotRequired[str]  # Reasoning for intent detection
+    sql_type: NotRequired[str]  # Type of SQL query (document/payment)
+    execution_result: NotRequired[str]  # SQL execution result
 
 
 
