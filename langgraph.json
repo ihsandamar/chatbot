@@ -11,7 +11,8 @@
   "graphs": {
       "supervisor": "src/graphs/graph_entrypoints.py:supervisor_graph",
       "text2sql":"src/graphs/graph_entrypoints.py:text2sql_graph",
-      "master_report_document_graph":"src/graphs/graph_entrypoints.py:master_report_document_graph"
+      "master_report_document_graph":"src/graphs/graph_entrypoints.py:master_report_document_graph",
+      "generic_sql_graph":"src/graphs/graph_entrypoints.py:generic_sql_graph"
 
   },
   "env": "config/.env"

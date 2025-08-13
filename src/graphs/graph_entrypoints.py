@@ -1,3 +1,4 @@
+from src.graphs.generic_sql_graph import GenericSQLGraph
 from src.graphs.graph_repository import GraphRepository
 from src.graphs.master_report_graph import ERPSQLChatbot
 
@@ -46,4 +47,12 @@ def master_report_document_graph():
     llm = LLM(model=config.llm.model, temperature=config.llm.temperature, api_key=config.llm.api_key)
     db = SQLDatabase.from_uri(config.database.uri)
     graph = ERPSQLChatbot(llm=llm, db=db).build_graph()
+    return graph
+
+
+def generic_sql_graph():
+    config = ConfigLoader.load_config("config/text2sql_config.yaml")
+    llm = LLM(model=config.llm.model, temperature=config.llm.temperature, api_key=config.llm.api_key)
+    db = SQLDatabase.from_uri(config.database.uri)
+    graph = GenericSQLGraph(llm=llm, db=db).build_graph()
     return graph
