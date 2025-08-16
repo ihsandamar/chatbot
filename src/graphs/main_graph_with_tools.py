@@ -56,6 +56,8 @@ class MainGraph(BaseGraph):
         lg.debug("AssistanceToolkit tools loaded", count=len(assistance_tools))
         lg.debug("Total tools", total=len(tools))
 
+        
+
         # --- Agent ---------------------------------------------------------
         agent = create_react_agent(
             model=self.llm.get_chat(),

@@ -56,3 +56,8 @@ def generic_sql_graph():
     db = SQLDatabase.from_uri(config.database.uri)
     graph = GenericSQLGraph(llm=llm, db=db).build_graph()
     return graph
+
+
+
+def forza_rag():
+    return graph("forza_rag").build_graph()    

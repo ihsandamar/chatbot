@@ -3,6 +3,7 @@ from langgraph_supervisor import create_supervisor
 from src.graphs.chat_graph import ChatGraph
 from src.graphs.registry import register_graph
 from src.graphs.text2sql_graph import Text2SQLGraph
+from src.tools.forza_api_tools import ForzaAPIToolkit
 from langchain_core.tools import tool
 from datetime import datetime  
 from src.graphs.base_graph import BaseGraph
@@ -66,10 +67,15 @@ class SupervisorTestGraph(BaseGraph):
     def build_graph(self):
         chat_graph = ChatGraph(self.llm).build_graph()
         text2sql_graph_agent = Text2SQLGraph(self.llm).build_graph()
+        
+        # Initialize Forza API Toolkit
+        forza_toolkit = ForzaAPIToolkit(base_url="http://localhost:8080")
+        forza_tools = forza_toolkit.get_tools()
+        
         supervisor = create_supervisor(
             model=self.llm.get_chat(), 
             agents=[chat_graph, text2sql_graph_agent], 
-            tools=[get_today, get_help_info],
+            tools=[get_today, get_help_info] + forza_tools,
             prompt=(
                 "You are an intelligent customer service supervisor managing specialized support agents. "
                 "Your role is to analyze customer requests and direct them to the most appropriate expert. "
@@ -87,6 +93,12 @@ class SupervisorTestGraph(BaseGraph):
                 "Available tools:\n"
                 "- get_help_info: Use when customer asks about available services, capabilities, or 'what can you help with?'\n"
                 "- get_today: Use when current date is needed\n"
+                "- login: Forza ERP user authentication\n"
+                "- get_businesses_by_user_id: Get businesses for a specific user\n"
+                "- get_branches_by_business_id: Get branches for a specific business\n"
+                "- get_user_branches: Complete ERP workflow - login, get businesses, then get all branches (use when customer asks for 'my branches', 'show branches', 'list branches')\n"
+                "\n"
+                "For ERP operations, use the Forza tools directly when customer requests business data, user login, or branch information.\n"
             )
         )
         memory = MemorySaver()
