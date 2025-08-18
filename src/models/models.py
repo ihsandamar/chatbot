@@ -25,6 +25,14 @@ class State(TypedDict):
     intent_reasoning: NotRequired[str]  # Reasoning for intent detection
     sql_type: NotRequired[str]  # Type of SQL query (document/payment)
     execution_result: NotRequired[str]  # SQL execution result
+    
+    # GIB Mevzuat specific fields
+    search_keywords: NotRequired[List[str]]  # Extracted keywords for search
+    original_query: NotRequired[str]  # Original user query
+    search_results: NotRequired[List[Any]]  # Raw search results from API
+    top_results: NotRequired[List[Any]]  # Top scored results
+    detailed_results: NotRequired[List[Any]]  # Results with full content
+    mevzuat_summary: NotRequired[str]  # Final summary for user
 
 
 

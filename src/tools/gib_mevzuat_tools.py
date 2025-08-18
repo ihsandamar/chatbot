@@ -330,3 +330,5 @@ def get_gib_mevzuat_tools(llm=None) -> List[BaseTool]:
         GIBMevzuatSearchTool(),
         GIBContentFetchTool()
     ]
+
+

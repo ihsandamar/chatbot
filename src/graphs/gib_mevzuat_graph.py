@@ -34,15 +34,19 @@ class GIBMevzuatGraph(BaseGraph):
             user_input = self._get_user_input(state)
             
             if not user_input:
-                state["messages"] = state.get("messages", []) + [
-                    "Bot: Lütfen aramak istediğiniz konuyu belirtin."
-                ]
-                return state
+                return self._add_error_message(state, "Lütfen aramak istediğiniz konuyu belirtin.")
             
             # Anahtar kelime çıkarma aracını kullan
             keyword_tool = next(tool for tool in self.tools if tool.name == "extract_keywords")
             keywords_json = keyword_tool._run(user_input)
-            keywords = json.loads(keywords_json)
+            
+            try:
+                keywords = json.loads(keywords_json)
+                if not isinstance(keywords, list) or not keywords:
+                    # Fallback: basit kelime ayırma
+                    keywords = self._simple_keyword_extraction(user_input)
+            except:
+                keywords = self._simple_keyword_extraction(user_input)
             
             # State'e kaydet
             state["search_keywords"] = keywords
@@ -53,93 +57,84 @@ class GIBMevzuatGraph(BaseGraph):
             return state
             
         except Exception as e:
-            state["messages"] = state.get("messages", []) + [
-                f"Bot: Anahtar kelime çıkarma hatası: {str(e)}"
-            ]
-            return state
+            return self._add_error_message(state, f"Anahtar kelime çıkarma hatası: {str(e)}")
     
     def search_mevzuat_node(self, state: State) -> State:
-        """Tüm mevzuat türlerinde arama yap"""
+        """Mevzuat arama yap - önce önemli türlerde ara"""
         try:
             keywords = state.get("search_keywords", [])
-            if not keywords or len(keywords) == 0:
-                # Fallback: kullanıcı girdisini direkt kullan
-                user_input = self._get_user_input(state)
-                if user_input:
-                    keywords = ["mevzuat", user_input.split()[0] if user_input.split() else "kanun"]
-                    state["search_keywords"] = keywords
-                else:
-                    state["messages"] = state.get("messages", []) + [
-                        "Bot: Arama için anahtar kelime bulunamadı."
-                    ]
-                    return state
+            if not keywords:
+                return self._add_error_message(state, "Arama için anahtar kelime bulunamadı.")
             
-            # Arama terimi oluştur (ilk 3 kelimeyi birleştir)
+            # Arama terimi oluştur
             search_term = " ".join(keywords[:3]).strip()
+            if not search_term:
+                search_term = state.get("original_query", "mevzuat")
             
-            # Boş arama terimi kontrolü
-            if not search_term or search_term == "":
-                user_input = self._get_user_input(state)
-                search_term = user_input if user_input else "mevzuat"
+            print(f"Arama terimi: '{search_term}'")
             
             # Arama aracını al
             search_tool = next(tool for tool in self.tools if tool.name == "gib_mevzuat_search")
             
             all_results = []
             
-            # Her mevzuat türünde ara
-            for mevzuat_type in self.mevzuat_types:
+            # Öncelikle önemli mevzuat türlerinde ara
+            priority_types = ["genelYazilar", "teblig", "yonetmelikler", "icGenelge"]
+            
+            for mevzuat_type in priority_types:
                 try:
-                    print(f"{mevzuat_type} türünde aranıyor: {search_term}")
+                    print(f"Araniyor: {mevzuat_type} - {search_term}")
                     
                     result = search_tool._run(
                         search_terms=search_term,
                         mevzuat_type=mevzuat_type
                     )
                     
-                    # JSON formatında sonuç dönerse parse et
-                    if result.startswith('[') and result.endswith(']'):
-                        parsed_results = json.loads(result)
-                        for item in parsed_results:
-                            item["mevzuat_type"] = mevzuat_type
-                            all_results.append(item)
+                    # JSON formatında sonuç var mı kontrol et
+                    if result and result.startswith('[') and result.endswith(']'):
+                        try:
+                            parsed_results = json.loads(result)
+                            if isinstance(parsed_results, list):
+                                for item in parsed_results:
+                                    item["mevzuat_type"] = mevzuat_type
+                                    all_results.append(item)
+                                    
+                                print(f"  -> {len(parsed_results)} sonuç bulundu")
+                        except json.JSONDecodeError:
+                            print(f"  -> JSON parse hatası: {result[:100]}")
+                    else:
+                        print(f"  -> Sonuç yok: {result[:100] if result else 'Boş'}")
                     
+                    # Yeterli sonuç bulduysak diğer türleri arama
+                    if len(all_results) >= 10:
+                        break
+                        
                 except Exception as e:
-                    print(f"{mevzuat_type} arama hatası: {str(e)}")
+                    print(f"  -> {mevzuat_type} arama hatası: {str(e)}")
                     continue
             
             # Sonuçları state'e kaydet
             state["search_results"] = all_results
             
-            if all_results:
-                print(f"Toplam {len(all_results)} sonuç bulundu")
-            else:
-                print("Hiç sonuç bulunamadı")
+            print(f"Toplam {len(all_results)} sonuç bulundu")
             
             return state
             
         except Exception as e:
-            state["messages"] = state.get("messages", []) + [
-                f"Bot: Mevzuat arama hatası: {str(e)}"
-            ]
-            return state
+            return self._add_error_message(state, f"Mevzuat arama hatası: {str(e)}")
     
     def analyze_results_node(self, state: State) -> State:
         """Sonuçları analiz et ve en uygun olanları seç"""
         try:
             results = state.get("search_results", [])
-            original_query = state.get("original_query", "")
             keywords = state.get("search_keywords", [])
             
             if not results:
-                state["messages"] = state.get("messages", []) + [
-                    f"Bot: '{' '.join(keywords)}' konusunda herhangi bir mevzuat bulunamadı."
-                ]
-                return state
+                return self._add_error_message(state, f"'{' '.join(keywords) if keywords else 'Aramanız'}' konusunda mevzuat bulunamadı.")
             
-            # En alakalı sonuçları seç (başlık ve açıklamada anahtar kelimeleri ara)
-            relevant_results = []
+            print(f"Analiz ediliyor: {len(results)} sonuç")
             
+            # Tüm sonuçları puanla
             for result in results:
                 score = 0
                 title = result.get("title", "").lower()
@@ -147,178 +142,224 @@ class GIBMevzuatGraph(BaseGraph):
                 
                 # Anahtar kelime puanlaması
                 for keyword in keywords:
-                    if keyword.lower() in title:
-                        score += 3  # Başlıkta geçerse yüksek puan
-                    if keyword.lower() in description:
-                        score += 1  # Açıklamada geçerse düşük puan
+                    keyword_lower = keyword.lower()
+                    # Başlıkta tam eşleşme
+                    if keyword_lower in title:
+                        score += 5
+                    # Açıklamada eşleşme
+                    if keyword_lower in description:
+                        score += 2
+                    # Kısmi eşleşme (3+ karakter)
+                    if len(keyword_lower) >= 3:
+                        if any(keyword_lower in word for word in title.split()):
+                            score += 1
                 
-                if score > 0:
-                    result["relevance_score"] = score
-                    relevant_results.append(result)
+                # Tarih yeniliği bonusu
+                tarih = result.get("tarih", "")
+                if "2024" in tarih or "2023" in tarih:
+                    score += 1
+                
+                result["relevance_score"] = score
             
-            # Puanına göre sırala
-            relevant_results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+            # Puanına göre sırala ve en iyileri al
+            results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
             
-            # En iyi 3'ünü al
-            top_results = relevant_results[:3]
+            # En az 1 puanı olan sonuçları al (maksimum 5)
+            top_results = [r for r in results if r.get("relevance_score", 0) > 0][:5]
+            
+            # Hiç puanı olanı yoksa ilk 3'ü al
+            if not top_results:
+                top_results = results[:3]
             
             state["top_results"] = top_results
             
-            if top_results:
-                print(f"En alakalı {len(top_results)} sonuç seçildi")
+            print(f"En alakalı {len(top_results)} sonuç seçildi")
+            for result in top_results:
+                print(f"  - {result.get('title', 'Başlık yok')[:50]}... (Puan: {result.get('relevance_score', 0)})")
             
             return state
             
         except Exception as e:
-            state["messages"] = state.get("messages", []) + [
-                f"Bot: Sonuç analizi hatası: {str(e)}"
-            ]
-            return state
+            return self._add_error_message(state, f"Sonuç analizi hatası: {str(e)}")
     
     def fetch_content_node(self, state: State) -> State:
-        """Seçilen sonuçların tam içeriğini al"""
+        """Seçilen sonuçların tam içeriğini al (opsiyonel)"""
         try:
             top_results = state.get("top_results", [])
             
             if not top_results:
                 return state
             
+            print(f"İçerik detayları alınıyor: {len(top_results)} sonuç")
+            
             # İçerik alma aracını al
-            content_tool = next(tool for tool in self.tools if tool.name == "gib_content_fetch")
+            content_tool = next((tool for tool in self.tools if tool.name == "gib_content_fetch"), None)
             
             detailed_results = []
             
-            for result in top_results:
+            for i, result in enumerate(top_results, 1):
                 site_link = result.get("siteLink", "")
-                if site_link:
+                
+                # İçerik alma işlemini sadece ilk 3 sonuç için yap (performans)
+                if i <= 3 and site_link and content_tool:
                     try:
-                        print(f"İçerik alınıyor: {site_link}")
+                        print(f"  {i}. İçerik alınıyor: {site_link[:50]}...")
                         
                         content = content_tool._run(site_link)
-                        result["full_content"] = content
-                        detailed_results.append(result)
-                        
+                        if content and len(content.strip()) > 50:
+                            result["full_content"] = content
+                            print(f"     -> Başarılı ({len(content)} karakter)")
+                        else:
+                            result["full_content"] = result.get("description", "İçerik alınamadı")
+                            print(f"     -> Kısa içerik, açıklama kullanıldı")
+                            
                     except Exception as e:
-                        print(f"İçerik alma hatası: {str(e)}")
+                        print(f"     -> İçerik alma hatası: {str(e)}")
                         result["full_content"] = result.get("description", "İçerik alınamadı")
-                        detailed_results.append(result)
                 else:
-                    result["full_content"] = result.get("description", "Link bulunamadı")
-                    detailed_results.append(result)
+                    # İçerik alınmayan sonuçlar için açıklamayı kullan
+                    result["full_content"] = result.get("description", "Açıklama mevcut değil")
+                
+                detailed_results.append(result)
             
             state["detailed_results"] = detailed_results
             
             return state
             
         except Exception as e:
-            state["messages"] = state.get("messages", []) + [
-                f"Bot: İçerik alma hatası: {str(e)}"
-            ]
+            print(f"İçerik alma genel hatası: {str(e)}")
+            # Hata durumunda top_results'ı detailed_results olarak kullan
+            state["detailed_results"] = state.get("top_results", [])
             return state
     
     def generate_summary_node(self, state: State) -> State:
         """Bulunan mevzuatları özetle ve kullanıcıya sun"""
         try:
             detailed_results = state.get("detailed_results", [])
+            top_results = state.get("top_results", [])
             original_query = state.get("original_query", "")
             
-            if not detailed_results:
-                state["messages"] = state.get("messages", []) + [
-                    "Bot: Aramanızla ilgili mevzuat bulunamadı."
-                ]
-                return state
+            # Sonuç yoksa hata mesajı
+            if not detailed_results and not top_results:
+                return self._add_bot_message(state, "Aramanızla ilgili mevzuat bulunamadı.")
             
-            # LLM ile özet oluştur
-            summary_prompt = f"""
-            Kullanıcı şunu sordu: "{original_query}"
-
-            Aşağıdaki GIB mevzuatları bulundu:
-
-            """
+            # Mevcut sonuçları kullan
+            results_to_use = detailed_results if detailed_results else top_results
             
-            for i, result in enumerate(detailed_results, 1):
-                summary_prompt += f"""
-                {i}. {result.get('title', 'Başlık yok')}
-                Tarih: {result.get('tarih', 'Tarih yok')}
-                Kanun: {result.get('kanunTitle', '')} ({result.get('kanunNo', '')})
-                Tür: {result.get('mevzuat_type', 'Bilinmiyor')}
+            # Basit özet oluştur
+            summary = f"🎯 KONU: {original_query}\n\n"
+            summary += f"📋 BULUNAN MEVZUAT ({len(results_to_use)} adet):\n\n"
+            
+            for i, result in enumerate(results_to_use, 1):
+                title = result.get('title', 'Başlık yok')
+                tarih = result.get('tarih', 'Tarih yok')
+                kanun_title = result.get('kanunTitle', '')
+                kanun_no = result.get('kanunNo', '')
+                mevzuat_type = result.get('mevzuat_type', 'Genel')
+                site_link = result.get('siteLink', '')
+                description = result.get('description', '')[:200]
                 
-                İçerik:
-                {result.get('full_content', 'İçerik yok')[:1000]}...
-                
-                ---
-                """
+                summary += f"{i}. **{title}**\n"
+                summary += f"   📅 Tarih: {tarih}\n"
+                if kanun_title:
+                    summary += f"   📜 Kanun: {kanun_title}"
+                    if kanun_no:
+                        summary += f" ({kanun_no})"
+                    summary += "\n"
+                summary += f"   📂 Tür: {mevzuat_type}\n"
+                if description:
+                    summary += f"   📝 Açıklama: {description}...\n"
+                if site_link:
+                    summary += f"   🔗 Link: {site_link}\n"
+                summary += "\n"
             
-            summary_prompt += """
-            Yukarıdaki mevzuatları kullanıcının sorusu bağlamında özetle:
-            1. Kullanıcının sorusuna doğrudan cevap ver
-            2. İlgili mevzuatları kısaca açıkla
-            3. Önemli hükümler ve kurallar belirt
-            4. Pratik uygulamaya yönelik bilgi ver
-            5. Türkçe, anlaşılır ve yapılandırılmış bir yanıt hazırla
-            
-            Yanıt formatı:
-            🎯 KONU: [Kullanıcının sorusu]
-            
-            📋 BULUNAN MEVZUAT:
-            - [Mevzuat listesi]
-            
-            ⚖️ ÖZET VE AÇIKLAMALAR:
-            [Detaylı açıklamalar]
-            
-            💡 ÖNEMLİ NOKTALAR:
-            [Önemli hususlar]
-            """
-            
-            try:
-                response = self.llm.get_chat().invoke(summary_prompt)
-                summary = response.content if hasattr(response, 'content') else str(response)
-                
-                state["messages"] = state.get("messages", []) + [f"Bot: {summary}"]
-                
-            except Exception as e:
-                # Fallback özet
-                fallback_summary = f"🎯 KONU: {original_query}\n\n📋 BULUNAN MEVZUAT:\n"
-                
-                for i, result in enumerate(detailed_results, 1):
-                    fallback_summary += f"{i}. {result.get('title', 'Başlık yok')}\n"
-                    fallback_summary += f"   📅 Tarih: {result.get('tarih', 'Bilinmiyor')}\n"
-                    fallback_summary += f"   📜 Kanun: {result.get('kanunTitle', 'Bilinmiyor')}\n"
-                    fallback_summary += f"   🔗 Link: {result.get('siteLink', 'Yok')}\n\n"
-                
-                fallback_summary += "⚠️ Detaylı özet oluşturulamadı. Yukarıdaki linkleri inceleyebilirsiniz."
-                
-                state["messages"] = state.get("messages", []) + [f"Bot: {fallback_summary}"]
-            
-            return state
+            # Özeti state'e kaydet ve bot mesajı olarak ekle
+            state["mevzuat_summary"] = summary
+            return self._add_bot_message(state, summary)
             
         except Exception as e:
-            state["messages"] = state.get("messages", []) + [
-                f"Bot: Özet oluşturma hatası: {str(e)}"
-            ]
-            return state
+            return self._add_error_message(state, f"Özet oluşturma hatası: {str(e)}")
     
     def _get_user_input(self, state: State) -> str:
         """State'den kullanıcı girdisini al"""
-        # user_query varsa onu kullan
+        # Önce user_query'yi kontrol et
         user_input = state.get("user_query", "")
         
-        # Yoksa messages'dan al
+        # Yoksa messages'dan son human mesajını al
         if not user_input:
             messages = state.get("messages", [])
             for message in reversed(messages):
+                # Message objectı mı kontrol et
                 if hasattr(message, 'type') and message.type == 'human':
                     if hasattr(message, 'content'):
                         if isinstance(message.content, list):
+                            # Content list formatı
                             for content_part in message.content:
                                 if isinstance(content_part, dict) and content_part.get('type') == 'text':
                                     user_input = content_part.get('text', '')
-                                    break
-                        else:
+                                    if user_input.strip():
+                                        break
+                        elif isinstance(message.content, str):
                             user_input = message.content
                         break
+                # String mesaj formatı (eski format)
+                elif isinstance(message, str) and not message.startswith('Bot:'):
+                    user_input = message
+                    break
         
-        return user_input.strip()
+        return user_input.strip() if user_input else ""
+    
+    def _add_bot_message(self, state: State, message: str) -> State:
+        """Bot mesajını doğru formatta ekle"""
+        from langchain.schema import AIMessage
+        
+        messages = state.get("messages", [])
+        bot_message = AIMessage(content=message)
+        messages.append(bot_message)
+        state["messages"] = messages
+        return state
+    
+    def _add_error_message(self, state: State, error: str) -> State:
+        """Hata mesajını ekle"""
+        return self._add_bot_message(state, f"❌ Hata: {error}")
+    
+    def _simple_keyword_extraction(self, text: str) -> list:
+        """Basit anahtar kelime çıkarma (fallback)"""
+        import re
+        
+        # Önemli vergi terimleri
+        important_terms = [
+            'kdv', 'katma', 'değer', 'vergisi', 'özel', 'tüketim', 'ötv', 'gelir', 'kurumlar',
+            'tevkifat', 'stopaj', 'iade', 'istisna', 'muafiyet', 'indirim', 'beyanname',
+            'ihracat', 'ithalat', 'fatura', 'belge', 'teşvik', 'matrah', 'oran', 'tarhiyat'
+        ]
+        
+        # Metni temizle
+        text = text.lower()
+        text = re.sub(r'[^\w\s]', ' ', text)
+        words = text.split()
+        
+        # Önemli terimleri bul
+        keywords = []
+        for word in words:
+            if word in important_terms and word not in keywords:
+                keywords.append(word)
+                if len(keywords) >= 3:
+                    break
+        
+        # Yeterli değilse diğer kelimeleri ekle
+        if len(keywords) < 3:
+            stop_words = {'bir', 'bu', 'da', 'de', 'den', 'ile', 'için', 'mi', 'mu', 'nı', 'nü', 'na', 'ne', 'hakkında', 'nasıl', 'nedir'}
+            for word in words:
+                if (len(word) > 2 and 
+                    word not in stop_words and 
+                    word not in keywords and
+                    not word.isdigit()):
+                    keywords.append(word)
+                    if len(keywords) >= 3:
+                        break
+        
+        return keywords[:3] if keywords else ['mevzuat', 'kanun', 'hüküm']
     
     def build_graph(self):
         """Graph'ı oluştur"""
