@@ -65,3 +65,7 @@ def forza_rag():
 
 def sefim_rag():
     return graph("sefim_rag").build_graph()
+
+
+def gib_mevzuat():
+    return graph("gib_mevzuat").build_graph()

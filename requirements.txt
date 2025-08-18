@@ -18,3 +18,4 @@ typing_extensions==4.14.1
 chromadb==0.5.5
 pypdf==4.0.1
 langchain-chroma==0.1.2
+beautifulsoup4==4.12.2
