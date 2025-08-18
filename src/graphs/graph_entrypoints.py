@@ -60,4 +60,8 @@ def generic_sql_graph():
 
 
 def forza_rag():
-    return graph("forza_rag").build_graph()    
+    return graph("forza_rag").build_graph()
+
+
+def sefim_rag():
+    return graph("sefim_rag").build_graph()
