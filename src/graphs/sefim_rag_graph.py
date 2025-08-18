@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from langgraph.graph import StateGraph
 from langchain.schema.runnable import RunnableLambda
 from langchain.chains.retrieval_qa.base import RetrievalQA
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS, C
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from typing import TypedDict
 from typing import List, Optional, TypedDict
