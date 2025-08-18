@@ -5,8 +5,13 @@ from dotenv import load_dotenv
 from langgraph.graph import StateGraph
 from langchain.schema.runnable import RunnableLambda
 from langchain.chains.retrieval_qa.base import RetrievalQA
-from langchain_community.vectorstores import FAISS, C
+try:
+    from langchain_chroma import Chroma
+except ImportError:
+    from langchain_community.vectorstores import Chroma
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+import chromadb
+from chromadb.config import Settings
 from typing import TypedDict
 from typing import List, Optional, TypedDict
 from langgraph.graph.message import AnyMessage, add_messages
@@ -32,23 +37,100 @@ embeddings = OpenAIEmbeddings(
 class SefimRAGGraph(BaseGraph):
     def __init__(self, llm: LLM):
         super().__init__(llm, State)
-        self.vectorstore_path = "data/vector_index/sefim_master_panel_index"
+        self.chroma_db_path = "data/vector_index/sefim_chroma_db"
+        self.collection_name = "sefim_master_panel"
         self._initialize_rag_chain()
     
     def _initialize_rag_chain(self):
         """RAG chain'i başlatır"""
         try:
-            vectorstore = FAISS.load_local(self.vectorstore_path, embeddings=embeddings, allow_dangerous_deserialization=True)
-            retriever = vectorstore.as_retriever()
+            # Chroma client'ı başlatma
+            os.makedirs(self.chroma_db_path, exist_ok=True)
+            
+            chroma_client = chromadb.PersistentClient(
+                path=self.chroma_db_path,
+                settings=Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True
+                )
+            )
+            
+            # Collection'ı al veya oluştur
+            try:
+                collection = chroma_client.get_collection(self.collection_name)
+                if collection.count() == 0:
+                    raise ValueError("Collection boş")
+            except:
+                print(f"Uyarı: '{self.collection_name}' collection'ı bulunamadı veya boş. Önce dokümanları yükleyin.")
+                self.rag_chain = None
+                return
+            
+            # Chroma vectorstore'u oluştur
+            vectorstore = Chroma(
+                client=chroma_client,
+                collection_name=self.collection_name,
+                embedding_function=embeddings,
+            )
+            
+            retriever = vectorstore.as_retriever(
+                search_type="similarity",
+                search_kwargs={"k": 5}
+            )
             
             self.rag_chain = RetrievalQA.from_chain_type(
                 llm=self.llm.get_chat(),
                 retriever=retriever,
                 return_source_documents=False
             )
-        except FileNotFoundError:
-            print(f"Uyarı: {self.vectorstore_path} bulunamadı. Önce sefim_master_panel_kullanım.pdf dosyasını vector index'e yükleyin.")
+            
+            print(f"Chroma RAG chain başarıyla yüklendi. Collection: {self.collection_name}, Döküman sayısı: {collection.count()}")
+            
+        except Exception as e:
+            print(f"Chroma RAG chain başlatılırken hata: {str(e)}")
             self.rag_chain = None
+    
+    def add_documents_to_chroma(self, texts: List[str], metadatas: List[dict] = None):
+        """Yeni dökümanları Chroma'ya ekler"""
+        try:
+            os.makedirs(self.chroma_db_path, exist_ok=True)
+            
+            chroma_client = chromadb.PersistentClient(
+                path=self.chroma_db_path,
+                settings=Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True
+                )
+            )
+            
+            # Collection'ı oluştur veya al
+            try:
+                collection = chroma_client.get_collection(self.collection_name)
+            except:
+                collection = chroma_client.create_collection(
+                    name=self.collection_name,
+                    metadata={"description": "Sefim Master Panel dökümanları"}
+                )
+            
+            # Chroma vectorstore'u oluştur
+            vectorstore = Chroma(
+                client=chroma_client,
+                collection_name=self.collection_name,
+                embedding_function=embeddings,
+            )
+            
+            # Dökümanları ekle
+            vectorstore.add_texts(
+                texts=texts,
+                metadatas=metadatas or [{"source": "sefim_manual"} for _ in texts]
+            )
+            
+            print(f"Başarıyla {len(texts)} döküman Chroma'ya eklendi. Toplam döküman sayısı: {collection.count()}")
+            
+            # RAG chain'i yeniden başlat
+            self._initialize_rag_chain()
+            
+        except Exception as e:
+            print(f"Döküman eklenirken hata: {str(e)}")
     
     def run_sefim_rag(self, state: State) -> State:
         """Sefim RAG node fonksiyonu"""
@@ -75,7 +157,7 @@ class SefimRAGGraph(BaseGraph):
             raise ValueError("Giriş verisi eksik: 'user_query' veya 'messages' bulunamadı.")
 
         if self.rag_chain is None:
-            error_message = "Bot: Şefim Master Panel dokümanı henüz yüklenmemiş. Lütfen önce sefim_master_panel_kullanım.pdf dosyasını sisteme yükleyin."
+            error_message = "Bot: Şefim Master Panel dokümanı henüz Chroma veritabanına yüklenmemiş. Lütfen önce dökümanları yükleyin."
             state["messages"] = state.get("messages", []) + [error_message]
             return state
 
