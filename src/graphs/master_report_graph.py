@@ -21,7 +21,7 @@ from langchain_community.agent_toolkits import SQLDatabaseToolkit
 
 from src.graphs.base_graph import BaseGraph
 from src.graphs.registry import register_graph
-from src.models.models import LLM
+from src.models.models import LLM, State
 from src.services.app_logger import log
 from src.services.config_loader import ConfigLoader
 
@@ -33,7 +33,8 @@ config = ConfigLoader.load_config("config/text2sql_config.yaml")
 # ================================
 
 class ERPState(TypedDict):
-    """State for ERP SQL chatbot"""
+    """State for ERP SQL chatbot - extends standard State"""
+    messages: Annotated[List, ...]  # Standard messages field for supervisor compatibility
     question: str           # Kullanıcı sorusu
     query: str             # Üretilen SQL sorgusu
     result: str            # SQL sonucu
@@ -657,7 +658,7 @@ class ERPSQLChatbot(BaseGraph):
     """Simple and effective ERP SQL Chatbot"""
     
     def __init__(self, llm: LLM, db: SQLDatabase = None):
-        super().__init__(llm=llm, state_class=ERPState)
+        super().__init__(llm=llm, state_class=State)  # Use standard State for supervisor compatibility
         self.logger = log.get(module="erp_sql_chatbot")
         
         # Database setup
@@ -695,18 +696,50 @@ class ERPSQLChatbot(BaseGraph):
         """Build the LangGraph workflow"""
         self.logger.info("Building ERP SQL graph")
         
-        # Create graph
-        graph = StateGraph(ERPState)
+        # Create graph using standard State
+        graph = StateGraph(State)
         
-        # Define nodes with wrapped functions
-        def write_query_node(state: ERPState) -> ERPState:
-            return write_query(state, self.llm, self.analyzer)
+        # Define nodes with wrapped functions that handle state conversion
+        def write_query_node(state: State) -> State:
+            # Convert State to ERPState
+            erp_state = self._convert_to_erp_state(state)
+            result = write_query(erp_state, self.llm, self.analyzer)
+            # Convert back to State
+            return self._convert_to_standard_state(result, state)
         
-        def execute_query_node(state: ERPState) -> ERPState:
-            return execute_query(state, self.db)
+        def execute_query_node(state: State) -> State:
+            # Convert State to ERPState  
+            erp_state = self._convert_to_erp_state(state)
+            result = execute_query(erp_state, self.db)
+            # Convert back to State
+            return self._convert_to_standard_state(result, state)
         
-        def generate_answer_node(state: ERPState) -> ERPState:
-            return generate_answer(state, self.llm)
+        def generate_answer_node(state: State) -> State:
+            # Convert State to ERPState
+            erp_state = self._convert_to_erp_state(state)
+            result = generate_answer(erp_state, self.llm)
+            # Convert back to State and add AI message
+            new_state = self._convert_to_standard_state(result, state)
+            # Add AI response message to ensure supervisor gets the response
+            if result.get("answer"):
+                # Ensure messages is a list
+                current_messages = new_state.get("messages", [])
+                if not isinstance(current_messages, list):
+                    current_messages = []
+                
+                # Log the result for debugging
+                self.logger.info("Generated answer for supervisor", 
+                               answer_preview=result["answer"][:100] + "..." if len(result["answer"]) > 100 else result["answer"])
+                
+                new_state["messages"] = current_messages + [AIMessage(content=result["answer"])]
+            else:
+                # Fallback if no answer was generated
+                self.logger.warning("No answer generated, adding fallback response")
+                current_messages = new_state.get("messages", [])
+                if not isinstance(current_messages, list):
+                    current_messages = []
+                new_state["messages"] = current_messages + [AIMessage(content="Yanıt oluşturulamadı.")]
+            return new_state
         
         # Add nodes
         graph.add_node("write_query", write_query_node)
@@ -721,12 +754,54 @@ class ERPSQLChatbot(BaseGraph):
         
         # Compile with memory (for human-in-the-loop if needed)
         compiled = graph.compile(
+            name="master_report_graph",
             checkpointer=self.memory,
             interrupt_before=[]  # Can add "execute_query" for human approval
         )
         
         self.logger.info("Graph compiled successfully")
         return compiled
+    
+    def _convert_to_erp_state(self, state: State) -> ERPState:
+        """Convert standard State to ERPState"""
+        # Extract question from messages
+        question = ""
+        if state.get("messages"):
+            for msg in reversed(state["messages"]):
+                if isinstance(msg, HumanMessage):
+                    question = msg.content
+                    break
+                elif isinstance(msg, dict) and msg.get("role") == "user":
+                    question = msg.get("content", "")
+                    break
+        
+        return ERPState(
+            messages=state.get("messages", []),
+            question=question,
+            query=state.get("generated_sql", ""),
+            result=state.get("sql_result", ""),
+            answer="",
+            error=state.get("error_message"),
+            intent=state.get("detected_intent"),
+            time_range=None,
+            filters=None
+        )
+    
+    def _convert_to_standard_state(self, erp_state: ERPState, original_state: State) -> State:
+        """Convert ERPState back to standard State"""
+        # Ensure messages is properly carried forward
+        messages = original_state.get("messages", [])
+        if not isinstance(messages, list):
+            messages = []
+            
+        new_state = State(
+            messages=messages,
+            generated_sql=erp_state.get("query", ""),
+            sql_result=erp_state.get("result", ""),
+            error_message=erp_state.get("error"),
+            detected_intent=erp_state.get("intent")
+        )
+        return new_state
     
     def invoke(self, messages: List[Any], config: Optional[Dict] = None) -> str:
         """Main entry point - process user message"""

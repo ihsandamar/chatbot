@@ -1,0 +1,57 @@
+# Generic SQL Graph Configuration for Payment Operations
+llm:
+  model: "gpt-3.5-turbo" 
+  temperature: 0.0
+  api_key: "${OPENAI_API_KEY}"
+
+database:
+  uri: "${DATABASE_URL}"
+  schema: "public"
+
+# Graph specific settings  
+graph_type: "payment"
+context: |
+  You are an expert SQL generator specialized in payment and financial queries.
+  Focus on payment processing, transaction analysis, financial reporting, and payment status tracking.
+  
+  Common payment operations:
+  - Payment transaction queries
+  - Financial reporting and analytics
+  - Payment status tracking
+  - Revenue analysis
+  - Customer payment history
+  - Payment method analysis
+  
+  Always ensure financial data accuracy and maintain proper security standards.
+
+# Table focus for payment operations
+relevant_tables:
+  - "payments"
+  - "transactions" 
+  - "payment_methods"
+  - "invoices"
+  - "customers"
+  - "orders"
+
+# Query templates for common operations
+query_templates:
+  payment_history: |
+    SELECT p.id, p.amount, p.status, p.created_at, pm.method_name, c.name as customer_name
+    FROM payments p
+    LEFT JOIN payment_methods pm ON p.payment_method_id = pm.id
+    LEFT JOIN customers c ON p.customer_id = c.id
+    WHERE p.customer_id = {customer_id}
+    ORDER BY p.created_at DESC
+    LIMIT {limit}
+    
+  revenue_summary: |
+    SELECT 
+      DATE_TRUNC('month', created_at) as month,
+      SUM(amount) as total_revenue,
+      COUNT(*) as transaction_count
+    FROM payments
+    WHERE status = 'completed'
+      AND created_at >= '{start_date}'
+      AND created_at <= '{end_date}'
+    GROUP BY DATE_TRUNC('month', created_at)
+    ORDER BY month DESC

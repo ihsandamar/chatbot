@@ -1,0 +1,48 @@
+# Generic SQL Graph Configuration for Document Operations
+llm:
+  model: "gpt-3.5-turbo"
+  temperature: 0.0
+  api_key: "${OPENAI_API_KEY}"
+
+database:
+  uri: "${DATABASE_URL}"
+  schema: "public"
+  
+# Graph specific settings
+graph_type: "document"
+context: |
+  You are an expert SQL generator specialized in document-related queries.
+  Focus on document management, file operations, content retrieval, and document metadata.
+  
+  Common document operations:
+  - Document search and filtering
+  - Content analysis
+  - Metadata retrieval
+  - Document status tracking
+  - Version management
+  
+  Always prioritize accuracy and security in your SQL queries.
+
+# Table focus for document operations
+relevant_tables:
+  - "documents"
+  - "document_metadata" 
+  - "document_versions"
+  - "document_categories"
+  - "document_permissions"
+
+# Query templates for common operations
+query_templates:
+  search_documents: |
+    SELECT d.id, d.title, d.created_at, d.file_path, dm.category
+    FROM documents d
+    LEFT JOIN document_metadata dm ON d.id = dm.document_id
+    WHERE d.title ILIKE '%{search_term}%' OR dm.content ILIKE '%{search_term}%'
+    ORDER BY d.created_at DESC
+    LIMIT {limit}
+    
+  get_document_details: |
+    SELECT d.*, dm.category, dm.tags, dm.description
+    FROM documents d
+    LEFT JOIN document_metadata dm ON d.id = dm.document_id
+    WHERE d.id = {document_id}

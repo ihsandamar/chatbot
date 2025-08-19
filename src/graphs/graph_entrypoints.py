@@ -50,8 +50,16 @@ def master_report_document_graph():
     return graph
 
 
-def generic_sql_graph():
-    config = ConfigLoader.load_config("config/text2sql_config.yaml")
+def generic_sql_document_graph():
+    config = ConfigLoader.load_config("config/generic_sql_document_config.yaml")
+    llm = LLM(model=config.llm.model, temperature=config.llm.temperature, api_key=config.llm.api_key)
+    db = SQLDatabase.from_uri(config.database.uri)
+    graph = GenericSQLGraph(llm=llm, db=db).build_graph()
+    return graph
+
+
+def generic_sql_payment_graph():
+    config = ConfigLoader.load_config("config/generic_sql_payment_config.yaml") 
     llm = LLM(model=config.llm.model, temperature=config.llm.temperature, api_key=config.llm.api_key)
     db = SQLDatabase.from_uri(config.database.uri)
     graph = GenericSQLGraph(llm=llm, db=db).build_graph()
@@ -69,3 +77,7 @@ def sefim_rag():
 
 def gib_mevzuat():
     return graph("gib_mevzuat").build_graph()
+
+
+def forza_toolkit():
+    return graph("forza_toolkit").build_graph()
