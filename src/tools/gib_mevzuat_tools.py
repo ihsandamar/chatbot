@@ -3,6 +3,7 @@ GIB Mevzuat API Tools
 Gelir İdaresi Başkanlığı mevzuat araştırma araçları
 """
 
+import logging
 import requests
 import json
 from typing import List, Dict, Any, Optional
@@ -33,17 +34,17 @@ class GIBMevzuatSearchTool(BaseTool):
             # Arama parametreleri
             params = {
                 "page": 0,
-                "size": 20,
+                "size": 50,  # Daha fazla sonuç al
                 "sortFieldName": "priority",
                 "sortType": "ASC"
             }
             
-            # POST data - sadece title ile arama yap, diğerleri boş bırak
+            # POST data - hem title hem de description'da ara
             search_data = {
                 "kanunType": 1,
                 "title": search_terms,
                 "kanunNo": "",
-                "description": "",
+                "description": search_terms,  # Açıklamada da ara
                 "ktype": 1
             }
             
@@ -67,14 +68,16 @@ class GIBMevzuatSearchTool(BaseTool):
                     
                     if content:
                         results = []
-                        for item in content[:5]:  # İlk 5 sonucu al
+                        for item in content[:15]:  # Daha fazla sonuç al
                             result = {
                                 "title": item.get("title", ""),
-                                "description": item.get("description", "")[:500] + "..." if len(item.get("description", "")) > 500 else item.get("description", ""),
+                                "description": item.get("description", "")[:1000] + "..." if len(item.get("description", "")) > 1000 else item.get("description", ""),
                                 "siteLink": item.get("siteLink", ""),
                                 "tarih": item.get("tarih", ""),
                                 "kanunTitle": item.get("kanunTitle", ""),
-                                "kanunNo": item.get("kanunNo", "")
+                                "kanunNo": item.get("kanunNo", ""),
+                                "id": item.get("id", ""),  # Unique ID ekle
+                                "url": item.get("url", "")  # URL ekle
                             }
                             results.append(result)
                         
@@ -160,16 +163,15 @@ class GIBContentFetchTool(BaseTool):
             return f"İçerik alma hatası: {str(e)}"
 
 
-class KeywordExtractorTool(BaseTool):
-    """AI-driven kullanıcı isteğinden anahtar kelime çıkarma aracı"""
+class GIBKeywordExtractorTool(BaseTool):
+    """GIB mevzuat araması için AI-driven anahtar kelime çıkarma aracı"""
     
-    name: str = "extract_keywords"
+    name: str = "extract_gib_keywords"
     description: str = """
-    Kullanıcının sorduğu sorudan LLM kullanarak en önemli 3 anahtar kelimeyi çıkarır.
-    Bu kelimeler GIB mevzuat aramasında kullanılacak.
-    Örnek: 'KDV istisnası hakkında' -> ['KDV', 'istisna', 'vergi']
+    Kullanıcının vergi/mali mevzuat sorusundan GIB özelge araması için en uygun anahtar kelimeleri çıkarır.
+    Tamamen AI-driven yaklaşım kullanarak Türk vergi terminolojisine özel optimizasyon yapar.
     """
-    
+
     llm: Any = Field(default=None, exclude=True)
     
     def __init__(self, llm=None, **kwargs):
@@ -177,158 +179,141 @@ class KeywordExtractorTool(BaseTool):
         object.__setattr__(self, 'llm', llm)
     
     def _run(self, user_query: str) -> str:
-        """AI ile anahtar kelimeleri çıkar"""
+        """AI-driven anahtar kelime çıkarma"""
         try:
-            if self.llm:
-                # LLM ile anahtar kelime çıkarma
-                prompt = f"""
-Türkiye vergi ve mali mevzuatı araştırması için anahtar kelime çıkarma:
+            print(f"GIB anahtar kelime çıkarma başlatıldı: {user_query[:50]}")
+            
+            if not self.llm:
+                return self._emergency_fallback(user_query)
+            
+            # Tek prompt ile tüm işi yap
+            result = self._extract_with_ai(user_query)
+            
+            print(f"Anahtar kelime çıkarma tamamlandı")
+            return result
+            
+        except Exception as e:
+            print(f"Anahtar kelime çıkarma hatası: {str(e)}")
+            return self._emergency_fallback(user_query)
+    
+    def _extract_with_ai(self, user_query: str) -> str:
+        """AI ile anahtar kelime çıkarma"""
+        try:
+            prompt = f"""Sen Türkiye vergi mevzuatı uzmanısın. GIB mevzuat araması için anahtar kelime çıkarıyorsun.
 
 Kullanıcı sorusu: "{user_query}"
 
-Görevin: Yukarıdaki sorudan GIB (Gelir İdaresi Başkanlığı) mevzuat araması için en uygun 3 anahtar kelimeyi çıkar.
+GÖREV: Bu sorudan GIB mevzuat araması için en uygun 3-5 anahtar kelimeyi çıkar.
 
-Önemli kurallar:
-1. Sadece 3 kelime döndür
-2. Vergi terminolojisini öncelikle (KDV, ÖTV, gelir vergisi, kurumlar vergisi, etc.)
-3. Türkçe karakter kullanım (ğ, ş, ı, ö, ü, ç)
-4. Teknik terimler varsa onları tercihet (tevkifat, tarhiyat, tahakkuk, etc.)
-5. Stop word'leri kullanma (ve, ile, için, hakkında, etc.)
-6. Sadece arama için kritik kelimeleri seç
+ÖNEMLİ KURALLAR:
+1. **Vergi terminolojisi öncelikli**: KDV, ÖTV, gelir vergisi, kurumlar vergisi, stopaj, tevkifat
+2. **Teknik terimler önemli**: 
+   - POS cihazı = Ödeme Kaydedici Cihaz = ÖKC
+   - Stopaj = Tevkifat = Vergi Kesintisi
+   - İade = Geri Ödeme = Mahsup
+3. **Birleşik terimleri koru**: "ödeme kaydedici cihaz", "teknoloji geliştirme bölgesi"
+4. **Eş anlamlıları ekle**: POS için hem "POS cihazı" hem "ÖKC" ekle
+5. **Meslek/sektör tespiti**:
+   - Avukat, doktor, noter → "Serbest Meslek" ekle
+   - İnternet, online → "E-ticaret" ekle  
+   - Kira, emlak → "Gayrimenkul" ekle
+   - Akaryakıt, benzinlik → "Akaryakıt İstasyonu" ekle
+6. **Stop words çıkar**: ve, ile, için, hakkında, nasıl, nedir, olan, yapılan
 
-Örnekler:
-- "KDV iadesi nasıl alınır?" → ["KDV", "iade", "alım"]
-- "Özel tüketim vergisi oranları nedir?" → ["özel", "tüketim", "vergisi"]
-- "İhracat teşvik belgeleri" → ["ihracat", "teşvik", "belge"]
-- "Stopaj oranları 2024" → ["stopaj", "oran", "2024"]
+ÖRNEKLER:
+- "ödeme kaydedici cihaz kayıt işlemleri" → ["ödeme kaydedici cihaz", "ÖKC", "POS cihazı", "kayıt"]
+- "avukat pos cihazı kullanımı" → ["avukat", "serbest meslek", "POS cihazı", "ÖKC"]
+- "KDV iade süreci" → ["KDV iadesi", "iade", "geri ödeme"]
+- "akaryakıt istasyonu vergi mükellefiyeti" → ["akaryakıt istasyonu", "vergi mükellefiyeti", "ÖKC"]
+- "kredi kartı komisyon stopaj" → ["kredi kartı", "komisyon", "stopaj", "tevkifat"]
+- "internet satış kdv" → ["internet satış", "e-ticaret", "KDV", "dijital ticaret"]
 
-SADECE 3 kelimeyi JSON array formatında döndür:
-["kelime1", "kelime2", "kelime3"]
-"""
+SADECE anahtar kelimeleri JSON formatında döndür:
+["kelime1", "kelime2", "kelime3", "kelime4"]"""
+
+            response = self.llm.invoke(prompt)
+            result = response.content if hasattr(response, 'content') else str(response)
+            
+            # JSON'u temizle ve parse et
+            cleaned = self._clean_json_response(result)
+            
+            try:
+                keywords = json.loads(cleaned)
+                if isinstance(keywords, list):
+                    # Temizle ve filtrele
+                    filtered = [kw.strip() for kw in keywords if kw.strip() and len(kw.strip()) > 1]
+                    return json.dumps(filtered[:5], ensure_ascii=False)
+            except:
+                pass
+            
+            # JSON parse edilemezse regex ile kelime çıkar
+            keywords = self._extract_keywords_from_text(result)
+            return json.dumps(keywords[:5], ensure_ascii=False)
                 
-                try:
-                    response = self.llm.invoke(prompt)
-                    result = response.content if hasattr(response, 'content') else str(response)
-                    
-                    # JSON formatını temizle
-                    result = result.strip()
-                    if result.startswith('```json'):
-                        result = result.replace('```json', '').replace('```', '').strip()
-                    elif result.startswith('```'):
-                        result = result.replace('```', '').strip()
-                    
-                    # JSON parse et
-                    try:
-                        keywords = json.loads(result)
-                        if isinstance(keywords, list) and len(keywords) <= 3:
-                            return json.dumps(keywords[:3], ensure_ascii=False)
-                    except:
-                        # JSON parse edilemezse, parantez içindeki kelimeleri al
-                        import re
-                        matches = re.findall(r'"([^"]*)"', result)
-                        if matches:
-                            return json.dumps(matches[:3], ensure_ascii=False)
-                    
-                except Exception as e:
-                    print(f"LLM anahtar kelime çıkarma hatası: {e}")
-                    # Fallback olarak rule-based yaklaşım
-                    pass
-            
-            # Fallback: Rule-based yaklaşım
-            return self._fallback_keyword_extraction(user_query)
-            
         except Exception as e:
-            return f"Anahtar kelime çıkarma hatası: {str(e)}"
+            print(f"AI anahtar kelime çıkarma başarısız: {str(e)}")
+            return self._emergency_fallback(user_query)
     
-    def _fallback_keyword_extraction(self, user_query: str) -> str:
-        """Fallback rule-based anahtar kelime çıkarma"""
+    def _clean_json_response(self, response: str) -> str:
+        """LLM cevabından JSON formatını temizle"""
+        response = response.strip()
+        
+        # Markdown temizleme
+        if response.startswith('```json'):
+            response = response.replace('```json', '').replace('```', '').strip()
+        elif response.startswith('```'):
+            response = response.replace('```', '').strip()
+        
+        # İlk JSON array'i bul
+        match = re.search(r'\[.*?\]', response, re.DOTALL)
+        if match:
+            return match.group(0)
+            
+        return response
+    
+    def _extract_keywords_from_text(self, text: str) -> List[str]:
+        """Metinden regex ile anahtar kelime çıkar"""
+        # Tırnak içindeki kelimeleri bul
+        quoted = re.findall(r'"([^"]*)"', text)
+        if quoted:
+            return quoted[:5]
+            
+        # Virgül veya satır ile ayrılmış kelimeleri bul
+        lines = text.replace(',', '\n').split('\n')
+        keywords = []
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('-') and len(line) > 2:
+                keywords.append(line)
+                
+        return keywords[:5]
+    
+    def _emergency_fallback(self, user_query: str) -> str:
+        """Acil durum fallback - basit kelime çıkarma"""
         try:
-            # Türkçe stop words
-            stop_words = {
-                'bir', 'bu', 'da', 'de', 'den', 'ile', 'için', 'mi', 'mu', 'mü', 'var', 'yok',
-                'olan', 'olan', 'olur', 'ama', 'ancak', 'fakat', 'lakin', 'hakkında', 'ilgili',
-                'nasıl', 'neden', 'niçin', 'ne', 'kim', 'hangi', 'kaç', 'çok', 'az', 'fazla',
-                've', 'veya', 'ya', 'yahut', 'şu', 'o', 'ben', 'sen', 'biz', 'siz', 'onlar',
-                'şey', 'zaman', 'yer', 'kişi', 'kez', 'defa', 'sefer', 'tane', 'adet', 'nedir',
-                'nasıl', 'aldığım', 'alınır', 'yapılır', 'edilir', 'olarak'
-            }
+            # Büyük harfli kelimeler ve kısaltmalar
+            important_words = re.findall(r'\b[A-ZÇĞIÜÖŞ][a-zçğıöşü]*\b', user_query)
+            acronyms = re.findall(r'\b[A-ZÇĞIÜÖŞ]{2,}\b', user_query)
             
-            # Önemli vergi terimleri
-            important_terms = {
-                'kdv', 'katma', 'değer', 'vergisi', 'özel', 'tüketim', 'ötv', 'gelir', 'kurumlar',
-                'damga', 'harç', 'banka', 'sigorta', 'muameleleri', 'bsmv', 'istisna', 'iade',
-                'indirim', 'tevkifat', 'stopaj', 'beyanname', 'tahakkuk', 'tahsilat', 'tarhiyat',
-                'ceza', 'faiz', 'gecikme', 'ödeme', 'mahsup', 'terkin', 'iptal', 'düzeltme',
-                'ihracat', 'ithalat', 'gümrük', 'transit', 'antrepo', 'serbest', 'bölge',
-                'muafiyet', 'muhtasar', 'geçici', 'vergilendir', 'matrah', 'oran', 'haddi',
-                'teşvik', 'destek', 'belge', 'sertifika', 'başvuru', 'değerlendirme',
-                'ökc', 'okc', 'kamulaştırma', 'kamulaştırım', 'benzinlik', 'akaryakıt', 'station',
-                'petrol', 'motorin', 'lpg', 'yakıt', 'istasyon', 'bayii', 'distribütör',
-                'lisans', 'ruhsat', 'izin', 'yetki', 'çevre', 'sağlık', 'güvenlik'
-            }
+            # Sayıları ve yılları ekle
+            numbers = re.findall(r'\b20\d{2}\b', user_query)
             
-            # Metni temizle ve küçük harfe çevir
-            text = user_query.lower()
-            # Türkçe karakterleri koruyarak temizle
-            text = re.sub(r'[^\w\s]', ' ', text)
-            # Çoklu boşlukları tek boşluğa çevir
-            text = re.sub(r'\s+', ' ', text)
+            keywords = list(set(important_words + acronyms + numbers))
             
-            # Kelimeleri ayır
-            words = text.split()
+            # Stop word'leri temizle
+            stop_words = {'ve', 'ile', 'için', 'hakkında', 'nasıl', 'nedir', 'olan', 'bu'}
+            filtered = [kw for kw in keywords if kw.lower() not in stop_words]
             
-            # Anahtar kelimeleri bul
-            keywords = []
+            return json.dumps(filtered[:3], ensure_ascii=False)
             
-            # Önce önemli terimleri ara
-            for word in words:
-                if word in important_terms and word not in keywords:
-                    keywords.append(word)
-                    if len(keywords) >= 3:
-                        break
-            
-            # Eksik varsa diğer kelimelerden ekle
-            if len(keywords) < 3:
-                for word in words:
-                    if (len(word) > 2 and 
-                        word not in stop_words and 
-                        word not in keywords and
-                        not word.isdigit()):
-                        keywords.append(word)
-                        if len(keywords) >= 3:
-                            break
-            
-            # En az 1 kelime olsun - hiç kelime yoksa force olarak al
-            if not keywords:
-                # Tüm kelimeleri dene (stop words hariç)
-                all_words = [word for word in words if len(word) > 1 and word not in stop_words]
-                if all_words:
-                    keywords = all_words[:3]
-                else:
-                    # Son çare: tüm kelimeleri al
-                    keywords = [word for word in words if len(word) > 1][:3]
-            
-            # Hiç kelime yoksa orijinal sorgudan ilk kelimeleri al
-            if not keywords:
-                raw_words = user_query.lower().split()
-                keywords = [word for word in raw_words if len(word) > 1][:3]
-            
-            # Yine de hiç yoksa genel terim kullan
-            if not keywords:
-                keywords = ["mevzuat", "kanun", "düzenleme"]
-            
-            return json.dumps(keywords[:3], ensure_ascii=False)
-            
-        except Exception as e:
-            return f"Fallback anahtar kelime çıkarma hatası: {str(e)}"
+        except Exception:
+            return '["mevzuat", "vergi", "kanun"]'
 
 
 def get_gib_mevzuat_tools(llm=None) -> List[BaseTool]:
     """GIB mevzuat araçlarını döndür"""
     return [
-        KeywordExtractorTool(llm=llm),
+        GIBKeywordExtractorTool(llm=llm),
         GIBMevzuatSearchTool(),
         GIBContentFetchTool()
     ]
-
-

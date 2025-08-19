@@ -37,7 +37,7 @@ class GIBMevzuatGraph(BaseGraph):
                 return self._add_error_message(state, "Lütfen aramak istediğiniz konuyu belirtin.")
             
             # Anahtar kelime çıkarma aracını kullan
-            keyword_tool = next(tool for tool in self.tools if tool.name == "extract_keywords")
+            keyword_tool = next(tool for tool in self.tools if tool.name == "extract_gib_keywords")
             keywords_json = keyword_tool._run(user_input)
             
             try:
@@ -45,7 +45,10 @@ class GIBMevzuatGraph(BaseGraph):
                 if not isinstance(keywords, list) or not keywords:
                     # Fallback: basit kelime ayırma
                     keywords = self._simple_keyword_extraction(user_input)
-            except:
+                # 5 kelimeye kadar kabul et
+                keywords = keywords[:5] if len(keywords) > 5 else keywords
+            except Exception as e:
+                print(f"JSON parse hatası: {e}, fallback kullanılıyor")
                 keywords = self._simple_keyword_extraction(user_input)
             
             # State'e kaydet
@@ -60,63 +63,108 @@ class GIBMevzuatGraph(BaseGraph):
             return self._add_error_message(state, f"Anahtar kelime çıkarma hatası: {str(e)}")
     
     def search_mevzuat_node(self, state: State) -> State:
-        """Mevzuat arama yap - önce önemli türlerde ara"""
+        """Mevzuat arama yap - çoklu arama terimleri ve türler"""
         try:
             keywords = state.get("search_keywords", [])
             if not keywords:
                 return self._add_error_message(state, "Arama için anahtar kelime bulunamadı.")
             
-            # Arama terimi oluştur
-            search_term = " ".join(keywords[:3]).strip()
-            if not search_term:
-                search_term = state.get("original_query", "mevzuat")
-            
-            print(f"Arama terimi: '{search_term}'")
-            
             # Arama aracını al
             search_tool = next(tool for tool in self.tools if tool.name == "gib_mevzuat_search")
             
             all_results = []
+            searched_combinations = set()  # Duplicate sonucu engellemek için
             
-            # Öncelikle önemli mevzuat türlerinde ara
-            priority_types = ["genelYazilar", "teblig", "yonetmelikler", "icGenelge"]
+            # Tüm mevzuat türlerini ara
+            all_types = ["genelYazilar", "teblig", "yonetmelikler", "icGenelge", "ozelge", "sirkuler", "madde", "cbk", "bkk"]
             
-            for mevzuat_type in priority_types:
-                try:
-                    print(f"Araniyor: {mevzuat_type} - {search_term}")
+            # Farklı arama kombinasyonları oluştur
+            search_combinations = []
+            
+            # 1. Tüm kelimeleri birleştir
+            full_search = " ".join(keywords[:5]).strip()
+            if full_search:
+                search_combinations.append(full_search)
+            
+            # 2. Her bir anahtar kelimeyi ayrı ara
+            for keyword in keywords[:3]:
+                if keyword and len(keyword.strip()) > 2:
+                    search_combinations.append(keyword.strip())
+            
+            # 3. İkili kombinasyonlar
+            if len(keywords) >= 2:
+                for i in range(len(keywords)-1):
+                    combo = f"{keywords[i]} {keywords[i+1]}"
+                    if combo not in search_combinations:
+                        search_combinations.append(combo)
+            
+            # 4. Orijinal query'yi de ekle
+            original_query = state.get("original_query", "")
+            if original_query and original_query.strip() not in search_combinations:
+                search_combinations.append(original_query.strip())
+            
+            print(f"Arama kombinasyonları: {search_combinations}")
+            
+            # Her kombinasyon ve mevzuat tipi için arama yap
+            for search_term in search_combinations[:4]:  # Maximum 4 kombinasyon
+                for mevzuat_type in all_types[:6]:  # Maximum 6 tip
+                    combination_key = f"{search_term}_{mevzuat_type}"
+                    if combination_key in searched_combinations:
+                        continue
+                    searched_combinations.add(combination_key)
                     
-                    result = search_tool._run(
-                        search_terms=search_term,
-                        mevzuat_type=mevzuat_type
-                    )
-                    
-                    # JSON formatında sonuç var mı kontrol et
-                    if result and result.startswith('[') and result.endswith(']'):
-                        try:
-                            parsed_results = json.loads(result)
-                            if isinstance(parsed_results, list):
-                                for item in parsed_results:
-                                    item["mevzuat_type"] = mevzuat_type
-                                    all_results.append(item)
-                                    
-                                print(f"  -> {len(parsed_results)} sonuç bulundu")
-                        except json.JSONDecodeError:
-                            print(f"  -> JSON parse hatası: {result[:100]}")
-                    else:
-                        print(f"  -> Sonuç yok: {result[:100] if result else 'Boş'}")
-                    
-                    # Yeterli sonuç bulduysak diğer türleri arama
-                    if len(all_results) >= 10:
-                        break
+                    try:
+                        print(f"Araniyor: {mevzuat_type} - '{search_term}'")
                         
-                except Exception as e:
-                    print(f"  -> {mevzuat_type} arama hatası: {str(e)}")
-                    continue
+                        result = search_tool._run(
+                            search_terms=search_term,
+                            mevzuat_type=mevzuat_type
+                        )
+                        
+                        # JSON formatında sonuç var mı kontrol et
+                        if result and result.startswith('[') and result.endswith(']'):
+                            try:
+                                parsed_results = json.loads(result)
+                                if isinstance(parsed_results, list):
+                                    for item in parsed_results:
+                                        # Duplicate kontrolü - id veya title+tarih ile
+                                        item_id = item.get("id", "")
+                                        item_signature = f"{item.get('title', '')[:50]}_{item.get('tarih', '')}"
+                                        
+                                        # Bu sonuç daha önce eklendi mi?
+                                        is_duplicate = any(
+                                            (existing.get("id") == item_id and item_id) or
+                                            f"{existing.get('title', '')[:50]}_{existing.get('tarih', '')}" == item_signature
+                                            for existing in all_results
+                                        )
+                                        
+                                        if not is_duplicate:
+                                            item["mevzuat_type"] = mevzuat_type
+                                            item["search_term_used"] = search_term
+                                            all_results.append(item)
+                                        
+                                    print(f"  -> {len([i for i in parsed_results if not any(e.get('id')==i.get('id') and i.get('id') for e in all_results)])} yeni sonuç bulundu")
+                            except json.JSONDecodeError:
+                                print(f"  -> JSON parse hatası: {result[:100]}")
+                        else:
+                            print(f"  -> Sonuç yok")
+                        
+                        # Yeterli sonuç bulduysak dur
+                        if len(all_results) >= 30:
+                            print(f"Yeterli sonuç bulundu, arama durduruluyor.")
+                            break
+                            
+                    except Exception as e:
+                        print(f"  -> {mevzuat_type} arama hatası: {str(e)}")
+                        continue
+                
+                if len(all_results) >= 30:
+                    break
             
             # Sonuçları state'e kaydet
             state["search_results"] = all_results
             
-            print(f"Toplam {len(all_results)} sonuç bulundu")
+            print(f"Toplam {len(all_results)} benzersiz sonuç bulundu")
             
             return state
             
@@ -124,58 +172,148 @@ class GIBMevzuatGraph(BaseGraph):
             return self._add_error_message(state, f"Mevzuat arama hatası: {str(e)}")
     
     def analyze_results_node(self, state: State) -> State:
-        """Sonuçları analiz et ve en uygun olanları seç"""
+        """Sonuçları analiz et ve en uygun olanları seç - gelişmiş puanlama sistemi"""
         try:
             results = state.get("search_results", [])
             keywords = state.get("search_keywords", [])
+            original_query = state.get("original_query", "")
             
             if not results:
                 return self._add_error_message(state, f"'{' '.join(keywords) if keywords else 'Aramanız'}' konusunda mevzuat bulunamadı.")
             
             print(f"Analiz ediliyor: {len(results)} sonuç")
             
-            # Tüm sonuçları puanla
+            # Tüm sonuçları gelişmiş puanlama ile değerlendir
             for result in results:
                 score = 0
                 title = result.get("title", "").lower()
                 description = result.get("description", "").lower()
+                search_term_used = result.get("search_term_used", "").lower()
+                mevzuat_type = result.get("mevzuat_type", "")
                 
-                # Anahtar kelime puanlaması
+                # 1. Anahtar kelime puanlaması (gelişmiş)
                 for keyword in keywords:
-                    keyword_lower = keyword.lower()
-                    # Başlıkta tam eşleşme
+                    keyword_lower = keyword.lower().strip()
+                    if not keyword_lower or len(keyword_lower) < 2:
+                        continue
+                        
+                    # Başlıkta tam eşleşme (en yüksek puan)
                     if keyword_lower in title:
-                        score += 5
+                        if keyword_lower == title.strip():
+                            score += 15  # Tam başlık eşleşmesi
+                        elif title.startswith(keyword_lower) or title.endswith(keyword_lower):
+                            score += 10  # Baş veya son eşleşme
+                        else:
+                            score += 7  # Başlık içinde eşleşme
+                    
                     # Açıklamada eşleşme
                     if keyword_lower in description:
-                        score += 2
-                    # Kısmi eşleşme (3+ karakter)
+                        # Hangi konumda eşleştiğine göre puan ver
+                        desc_words = description.split()
+                        if len(desc_words) > 0:
+                            first_quarter = len(desc_words) // 4
+                            keyword_positions = [i for i, word in enumerate(desc_words) if keyword_lower in word]
+                            
+                            if keyword_positions:
+                                # Açıklamanın başında eşleşme daha değerli
+                                min_pos = min(keyword_positions)
+                                if min_pos <= first_quarter:
+                                    score += 5
+                                else:
+                                    score += 3
+                    
+                    # Kısmi/benzer kelime eşleşmesi
                     if len(keyword_lower) >= 3:
-                        if any(keyword_lower in word for word in title.split()):
-                            score += 1
+                        title_words = title.split()
+                        for word in title_words:
+                            if keyword_lower in word or word in keyword_lower:
+                                score += 2
+                                break
                 
-                # Tarih yeniliği bonusu
+                # 2. Orijinal query ile eşleşme
+                if original_query:
+                    orig_lower = original_query.lower()
+                    if orig_lower in title:
+                        score += 8
+                    elif orig_lower in description:
+                        score += 4
+                
+                # 3. Mevzuat türü önem derecesi
+                type_weights = {
+                    "genelYazilar": 5,
+                    "teblig": 4,
+                    "yonetmelikler": 4,
+                    "icGenelge": 3,
+                    "ozelge": 2,
+                    "sirkuler": 2,
+                    "madde": 3,
+                    "cbk": 2,
+                    "bkk": 2
+                }
+                score += type_weights.get(mevzuat_type, 1)
+                
+                # 4. Tarih yeniliği ve önemi
                 tarih = result.get("tarih", "")
-                if "2024" in tarih or "2023" in tarih:
+                current_year = 2024
+                for year in range(current_year-2, current_year+1):
+                    if str(year) in tarih:
+                        score += 3  # Son 3 yıl için bonus
+                        break
+                for year in range(current_year-5, current_year-2):
+                    if str(year) in tarih:
+                        score += 1  # 3-5 yıl arası için küçük bonus
+                        break
+                
+                # 5. Başlık uzunluğu ve içerik kalitesi
+                title_length = len(result.get("title", ""))
+                if 20 <= title_length <= 100:  # Optimal uzunluk
+                    score += 2
+                elif title_length > 100:
                     score += 1
+                
+                description_length = len(result.get("description", ""))
+                if description_length > 100:
+                    score += 2  # Detaylı açıklama bonusu
+                
+                # 6. Kullanılan arama teriminin kalitesi
+                if search_term_used and len(search_term_used.split()) > 1:
+                    score += 1  # Çoklu kelime araması bonusu
                 
                 result["relevance_score"] = score
             
             # Puanına göre sırala ve en iyileri al
             results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
             
-            # En az 1 puanı olan sonuçları al (maksimum 5)
-            top_results = [r for r in results if r.get("relevance_score", 0) > 0][:5]
+            # En yüksek puanlı sonucu bul
+            max_score = max((r.get("relevance_score", 0) for r in results), default=0)
             
-            # Hiç puanı olanı yoksa ilk 3'ü al
+            # Dinamik eşik belirleme
+            if max_score > 20:
+                threshold = max_score * 0.4  # Yüksek puanlı sonuçlar için çıta yüksek
+            elif max_score > 10:
+                threshold = max_score * 0.3
+            else:
+                threshold = max_score * 0.2  # Düşük puanlı sonuçlar için çıta düşük
+            
+            # Eşiği geçen sonuçları al (maksimum 8)
+            top_results = [r for r in results if r.get("relevance_score", 0) >= threshold][:8]
+            
+            # Hiçbir sonuç eşiği geçmediyse, en yüksek puanlı 5 sonucu al
             if not top_results:
+                top_results = results[:5]
+            
+            # En az 3, en fazla 8 sonuç olsun
+            if len(top_results) < 3 and len(results) >= 3:
                 top_results = results[:3]
             
             state["top_results"] = top_results
             
-            print(f"En alakalı {len(top_results)} sonuç seçildi")
-            for result in top_results:
-                print(f"  - {result.get('title', 'Başlık yok')[:50]}... (Puan: {result.get('relevance_score', 0)})")
+            print(f"En alakalı {len(top_results)} sonuç seçildi (Eşik: {threshold:.1f}, Max puan: {max_score})")
+            for i, result in enumerate(top_results[:5], 1):
+                title_short = result.get('title', 'Başlık yok')[:60]
+                score = result.get('relevance_score', 0)
+                mev_type = result.get('mevzuat_type', 'N/A')
+                print(f"  {i}. {title_short}... (Puan: {score}, Tür: {mev_type})")
             
             return state
             
@@ -324,42 +462,72 @@ class GIBMevzuatGraph(BaseGraph):
         return self._add_bot_message(state, f"❌ Hata: {error}")
     
     def _simple_keyword_extraction(self, text: str) -> list:
-        """Basit anahtar kelime çıkarma (fallback)"""
+        """Basit anahtar kelime çıkarma (fallback) - gelişmiş versiyon"""
         import re
+        
+        # Birleşik terimler sözlüğü
+        compound_terms = {
+            'ödeme kaydedici cihaz': ['ödeme kaydedici cihaz', 'ökc', 'pos'],
+            'kredi kartı': ['kredi kartı', 'pos', 'ödeme'],
+            'katma değer vergisi': ['katma değer vergisi', 'kdv', 'vergi'],
+            'özel tüketim vergisi': ['özel tüketim vergisi', 'ötv', 'tüketim'],
+            'gelir vergisi': ['gelir vergisi', 'gelir', 'vergi'],
+            'kurumlar vergisi': ['kurumlar vergisi', 'kurumlar', 'vergi']
+        }
         
         # Önemli vergi terimleri
         important_terms = [
             'kdv', 'katma', 'değer', 'vergisi', 'özel', 'tüketim', 'ötv', 'gelir', 'kurumlar',
             'tevkifat', 'stopaj', 'iade', 'istisna', 'muafiyet', 'indirim', 'beyanname',
-            'ihracat', 'ithalat', 'fatura', 'belge', 'teşvik', 'matrah', 'oran', 'tarhiyat'
+            'ihracat', 'ithalat', 'fatura', 'belge', 'teşvik', 'matrah', 'oran', 'tarhiyat',
+            'ökc', 'pos', 'ödeme', 'kaydedici', 'cihaz', 'kredi', 'kartı', 'akaryakıt',
+            'istasyon', 'benzinlik', 'damga', 'harç', 'bsmv', 'banka', 'sigorta'
         ]
         
         # Metni temizle
-        text = text.lower()
-        text = re.sub(r'[^\w\s]', ' ', text)
-        words = text.split()
+        text_lower = text.lower()
+        text_clean = re.sub(r'[^\w\s]', ' ', text_lower)
+        words = text_clean.split()
+        
+        # Anahtar kelimeleri bul
+        keywords = []
+        
+        # Önce birleşik terimleri ara
+        for compound_term, related_terms in compound_terms.items():
+            if compound_term in text_lower:
+                # Birleşik terimin kendisini ve ilişkili terimlerini ekle
+                for term in related_terms[:3]:  # Maksimum 3 ilişkili terim
+                    if term not in keywords:
+                        keywords.append(term)
+                        if len(keywords) >= 5:
+                            break
+                if len(keywords) >= 5:
+                    break
         
         # Önemli terimleri bul
-        keywords = []
-        for word in words:
-            if word in important_terms and word not in keywords:
-                keywords.append(word)
-                if len(keywords) >= 3:
-                    break
+        if len(keywords) < 3:
+            for word in words:
+                if word in important_terms and word not in keywords:
+                    keywords.append(word)
+                    if len(keywords) >= 5:
+                        break
         
         # Yeterli değilse diğer kelimeleri ekle
         if len(keywords) < 3:
-            stop_words = {'bir', 'bu', 'da', 'de', 'den', 'ile', 'için', 'mi', 'mu', 'nı', 'nü', 'na', 'ne', 'hakkında', 'nasıl', 'nedir'}
+            stop_words = {
+                'bir', 'bu', 'da', 'de', 'den', 'ile', 'için', 'mi', 'mu', 'nı', 'nü', 'na', 'ne', 
+                'hakkında', 'nasıl', 'nedir', 'olan', 've', 'veya', 'ama', 'fakat', 'şu', 'o'
+            }
             for word in words:
                 if (len(word) > 2 and 
                     word not in stop_words and 
                     word not in keywords and
                     not word.isdigit()):
                     keywords.append(word)
-                    if len(keywords) >= 3:
+                    if len(keywords) >= 5:
                         break
         
-        return keywords[:3] if keywords else ['mevzuat', 'kanun', 'hüküm']
+        return keywords[:5] if keywords else ['mevzuat', 'kanun', 'hüküm', 'düzenleme']
     
     def build_graph(self):
         """Graph'ı oluştur"""
