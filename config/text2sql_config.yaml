@@ -9,8 +9,7 @@ chatbot:
   thread_id: "1"
 
 database:
-  uri: mssql+pyodbc://sa:Vega1234@DESKTOP-TIEAGO8/FORZA?driver=ODBC+Driver+17+for+SQL+Server
-
+  uri: "${DATABASE_URL}"
  # Connection settings
   pool_size: 5
   max_overflow: 10
