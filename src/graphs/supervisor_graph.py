@@ -21,7 +21,7 @@ def get_today() -> str:
 def get_introduction() -> str:
     """Provide a friendly introduction when user greets or asks about the system"""
     return """
-👋 **Merhaba! Ben Akıllı Müşteri Hizmetleri Supervisörünüzüm**
+👋 **Merhaba! Ben Akıllı Müşteri Hizmetleri,**
 
 🎯 **Size Nasıl Yardımcı Olabilirim:**
 • Uzman modüllerimi kullanarak sorularınızı en uygun uzmana yönlendiririm

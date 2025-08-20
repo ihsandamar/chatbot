@@ -7,7 +7,7 @@ groups:
     - "Forza ERP API bağlanır mısın?"
     - "Kullanıcı adı a@a.com ve şifre 1233"
     - "Bu kullanıcının tüm işletmelerini listele"
-    - "Vega işletmesinin tüm şubelerini göster."
+    - "Fora işletmesinin tüm şubelerini göster."
   
   "Master Raporlar":
     - "Master Raporlarda 'MERKEZ' şubesinin Temmuz 2025teki satışlarını kategori bazında görmek istiyorum."
@@ -15,5 +15,5 @@ groups:
     - "VEGA işletmesi için toplam ciro nedir?"
   
   Mevzuat:
-    - "Restorantlarda ÖKC kullanımı ile ilgili yasa düzenleme göster."
+    - "Akaryakıt istasyonlarındaki ÖKC kullanımı ile ilgili yasa düzenleme göster."
     - "Bu düzenlemelerin kısaca açıkla" 
