@@ -12,8 +12,18 @@ groups:
   "Master Raporlar":
     - "Master Raporlarda 'MERKEZ' şubesinin Temmuz 2025teki satışlarını kategori bazında görmek istiyorum."
     - "Şimdi bunların toplam tutarını ver."
-    - "VEGA işletmesi için toplam ciro nedir?"
+    - "Master raporlarda Fora işletmesi için toplam ciro ne kadar?"
+    - "Master Raporlardan TUNALI şubesinden saat akşam 7 ile 9 arası en çok satış olan 3 masa hangileridi masa no ile birlikte ver."
   
   Mevzuat:
     - "Akaryakıt istasyonlarındaki ÖKC kullanımı ile ilgili yasa düzenleme göster."
     - "Bu düzenlemelerin kısaca açıkla" 
+
+  "Şefim Master Panel Kullanımı":
+    - "Şefim Master Panel kullanımını kısaca özetler misin?"
+    - "Ürün ekle/pasif için adımları detaylıca anlat"
+
+  "Text-to-SQL Modülü":
+    - "HARRBİ KLASİK DÜRÜM yapmak için gerekli ürünleri verir misin. (Tablolar ve bağlantıları: Boms -> BomBomDetails -> BomDetails -> ProductUnits -> Products)"
+
+

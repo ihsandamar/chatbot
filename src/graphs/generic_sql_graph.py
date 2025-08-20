@@ -368,7 +368,7 @@ def generate_answer(state: GenericSQLState, config: RunnableConfig, llm: LLM) ->
 
 
 def cleanup_database(state: GenericSQLState, config: RunnableConfig, db: SQLDatabase) -> GenericSQLState:
-    """Execute cleanup SQL"""
+    """Execute cleanup SQL and ensure messages compatibility"""
     logger = log.get(module="generic_sql", function="cleanup_database")
     
     try:
@@ -391,10 +391,22 @@ def cleanup_database(state: GenericSQLState, config: RunnableConfig, db: SQLData
             state["metadata"] = {}
         state["metadata"]["cleanup_time"] = datetime.now().isoformat()
         
+        # CRITICAL FIX: Ensure messages key exists for supervisor compatibility
+        if "messages" not in state:
+            from langchain.schema import AIMessage
+            answer = state.get("answer", "Sonuç bulunamadı.")
+            state["messages"] = [AIMessage(content=answer)]
+        
     except Exception as e:
         logger.error("Database cleanup failed", error=str(e))
         state["cleanup_completed"] = False
         # Don't fail the whole process for cleanup errors
+        
+        # Even on error, ensure messages exists
+        if "messages" not in state:
+            from langchain.schema import AIMessage
+            error_msg = f"Veritabanı işlemi sırasında hata oluştu: {str(e)}"
+            state["messages"] = [AIMessage(content=error_msg)]
     
     return state
 

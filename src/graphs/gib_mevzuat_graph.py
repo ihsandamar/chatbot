@@ -455,6 +455,12 @@ class GIBMevzuatGraph(BaseGraph):
         bot_message = AIMessage(content=message)
         messages.append(bot_message)
         state["messages"] = messages
+        
+        # Debug: Mesajın doğru eklendiğini kontrol et
+        print(f"[DEBUG] GIB Mevzuat - Bot mesajı eklendi: {len(message)} karakter")
+        print(f"[DEBUG] GIB Mevzuat - Toplam mesaj sayısı: {len(messages)}")
+        print(f"[DEBUG] GIB Mevzuat - Son mesaj content ilk 100 karakter: {message[:100]}...")
+        
         return state
     
     def _add_error_message(self, state: State, error: str) -> State:
