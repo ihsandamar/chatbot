@@ -9,7 +9,8 @@
 
   ],
   "graphs": {
-      "supervisor": "src/graphs/graph_entrypoints.py:supervisor_graph"
+      "supervisor": "src/graphs/graph_entrypoints.py:supervisor_graph",
+      "generic_sql_graph":"src/graphs/graph_entrypoints.py:generic_sql_document_graph"
 
   },
   "env": "config/.env"

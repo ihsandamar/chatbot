@@ -35,7 +35,7 @@ class SQLAgentConfiguration(BaseModel):
     
     # Core Assistant Settings
     system_prompt: str = Field(
-        default="Sen bir ERP uzmanı ve SQL sorgulama asistanısın.",
+        default="Sen bir ERP uzmanı ve SQL sorgulama asistanısın. Görevin verilen bilgileri kullanarak senden istenilen sorguyu ve bilgiyi vermen.",
         description="Ana sistem promptu - assistant'ın rolünü ve davranışını belirler"
     )
     
@@ -49,10 +49,20 @@ class SQLAgentConfiguration(BaseModel):
         default="SELECT 1 as test_connection",
         description="Graph başlamadan önce çalıştırılacak setup SQL (temp table oluşturma vs.)"
     )
+
+    table_name: str = Field(
+        default="",
+        description="Sorgu oluşturulacak ve çekilecek ana tablo adı"
+    )
+
+    table_columns: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Tablo kolonları bilgileri [{'name': 'kolon_adi', 'type': 'veri_tipi', 'description': 'açıklama'}]"
+    )
     
     table_description: str = Field(
         default="Genel ERP tabloları",
-        description="Kullanılacak tabloların açıklaması ve yapısı"
+        description="Kullanılacak tablonun açıklaması ve yapısı gibi ek detaylar"
     )
     
     cleanup_sql: str = Field(
@@ -115,6 +125,12 @@ Formatlanmış yanıt:""",
         default=0.0,
         description="Model temperature ayarı"
     )
+    
+    # Data Exploration Settings
+    max_distinct_values: int = Field(
+        default=20,
+        description="Her kolon için maksimum distinct değer sayısı"
+    )
 
 # ================================
 # STATE DEFINITION
@@ -122,19 +138,83 @@ Formatlanmış yanıt:""",
 
 class GenericSQLState(TypedDict):
     """Generic SQL Assistant State"""
-    question: str                    # User question
-    setup_completed: bool           # Setup SQL executed?
-    query: str                     # Generated SQL
-    result: str                    # SQL execution result
-    answer: str                    # Final formatted answer
-    error: Optional[str]           # Error message
-    fixed_query: Optional[str]     # Fixed SQL query
-    cleanup_completed: bool        # Cleanup executed?
-    metadata: Dict[str, Any]       # Additional metadata
+    # Core conversation
+    question: str                              # User question
+    messages: List[Any]                        # Chat messages
+    
+    # Configuration data
+    table_name: str                           # Main table name
+    table_columns: List[Dict[str, str]]       # Table column definitions
+    table_description: str                    # Table description
+    
+    # Data exploration
+    column_distinct_values: Dict[str, List]   # Distinct values per column
+    data_exploration_completed: bool          # Data exploration status
+    
+    # SQL workflow  
+    setup_completed: bool                     # Setup SQL executed?
+    query: str                               # Generated SQL
+    result: str                              # SQL execution result
+    answer: str                              # Final formatted answer
+    error: Optional[str]                     # Error message
+    fixed_query: Optional[str]               # Fixed SQL query
+    cleanup_completed: bool                  # Cleanup executed?
+    
+    # Metadata
+    metadata: Dict[str, Any]                 # Additional metadata
 
 # ================================
 # CORE FUNCTIONS
 # ================================
+
+def initialize_state(state: GenericSQLState, config: RunnableConfig) -> GenericSQLState:
+    """Initialize state with configuration data"""
+    logger = log.get(module="generic_sql", function="initialize_state")
+    
+    try:
+        # Get configuration
+        configurable = config.get("configurable", {})
+        
+        # Extract user question from messages if not already set
+        if not state.get("question") and state.get("messages"):
+            messages = state["messages"]
+            for msg in reversed(messages):
+                if hasattr(msg, 'type') and msg.type == "human":
+                    state["question"] = msg.content
+                    break
+                elif isinstance(msg, dict) and msg.get("role") == "user":
+                    state["question"] = msg.get("content", "")
+                    break
+        
+        # Initialize from config
+        state["table_name"] = configurable.get("table_name", "")
+        state["table_columns"] = configurable.get("table_columns", [])
+        state["table_description"] = configurable.get("table_description", "")
+        
+        # Initialize data exploration state
+        state["column_distinct_values"] = {}
+        state["data_exploration_completed"] = False
+        
+        # Initialize workflow state
+        state["setup_completed"] = False
+        state["query"] = ""
+        state["result"] = ""
+        state["answer"] = ""
+        state["error"] = None
+        state["fixed_query"] = None
+        state["cleanup_completed"] = False
+        state["metadata"] = {"initialization_time": datetime.now().isoformat()}
+        
+        logger.info("State initialized successfully", 
+                   table_name=state["table_name"],
+                   columns_count=len(state["table_columns"]))
+        
+    except Exception as e:
+        logger.error("State initialization failed", error=str(e))
+        state["error"] = f"Initialization error: {str(e)}"
+    
+    return state
+
 
 def setup_database(state: GenericSQLState, config: RunnableConfig, db: SQLDatabase) -> GenericSQLState:
     """Execute initial setup SQL"""
@@ -165,6 +245,99 @@ def setup_database(state: GenericSQLState, config: RunnableConfig, db: SQLDataba
     return state
 
 
+def explore_column_data(state: GenericSQLState, config: RunnableConfig, db: SQLDatabase) -> GenericSQLState:
+    """Collect distinct values from each column for better SQL generation"""
+    logger = log.get(module="generic_sql", function="explore_column_data")
+    
+    try:
+        table_name = state.get("table_name", "")
+        table_columns = state.get("table_columns", [])
+        
+        if not table_name or not table_columns:
+            logger.warning("No table name or columns provided, skipping data exploration")
+            state["data_exploration_completed"] = False
+            return state
+        
+        execute_tool = QuerySQLDatabaseTool(db=db)
+        column_distinct_values = {}
+        
+        # Get configurable limits
+        configurable = config.get("configurable", {})
+        max_distinct_values = configurable.get("max_distinct_values", 20)
+        
+        for column in table_columns:
+            column_name = column.get("name", "")
+            column_type = column.get("type", "").lower()
+            
+            if not column_name:
+                continue
+            
+            try:
+                # Skip certain data types that might have too many distinct values
+                if any(skip_type in column_type for skip_type in ['text', 'ntext', 'image', 'binary']):
+                    logger.info(f"Skipping column {column_name} due to data type: {column_type}")
+                    continue
+                
+                # Create distinct query with limit
+                distinct_query = f"""
+                SELECT DISTINCT TOP {max_distinct_values} [{column_name}]
+                FROM [{table_name}]
+                WHERE [{column_name}] IS NOT NULL
+                ORDER BY [{column_name}]
+                """
+                
+                result = execute_tool.invoke(distinct_query)
+                
+                if result:
+                    # Parse result into list of values
+                    result_str = str(result).strip()
+                    
+                    # Extract values from result string (basic parsing)
+                    values = []
+                    if result_str and result_str != "[]":
+                        # Split by newlines and clean up
+                        lines = result_str.split('\n')
+                        for line in lines:
+                            line = line.strip()
+                            if line and not line.startswith('(') and line != '[]':
+                                # Remove parentheses and quotes
+                                clean_value = line.strip("(),'\"")
+                                if clean_value and clean_value not in ['None', 'NULL']:
+                                    values.append(clean_value)
+                    
+                    # Limit values to prevent overwhelming the prompt
+                    if len(values) > max_distinct_values:
+                        values = values[:max_distinct_values]
+                    
+                    column_distinct_values[column_name] = values
+                    
+                    logger.info(f"Collected {len(values)} distinct values for column {column_name}")
+                
+            except Exception as col_error:
+                logger.warning(f"Failed to get distinct values for column {column_name}", 
+                             error=str(col_error))
+                column_distinct_values[column_name] = []
+        
+        state["column_distinct_values"] = column_distinct_values
+        state["data_exploration_completed"] = True
+        
+        # Update metadata
+        state["metadata"]["data_exploration_time"] = datetime.now().isoformat()
+        state["metadata"]["explored_columns_count"] = len(column_distinct_values)
+        
+        logger.info("Data exploration completed successfully", 
+                   columns_explored=len(column_distinct_values),
+                   total_distinct_values=sum(len(vals) for vals in column_distinct_values.values()))
+    
+    except Exception as e:
+        logger.error("Data exploration failed", error=str(e))
+        state["column_distinct_values"] = {}
+        state["data_exploration_completed"] = False
+        # Don't set error as this is not critical for the workflow
+    
+    return state
+
+
 def write_query(state: GenericSQLState, config: RunnableConfig, llm: LLM) -> GenericSQLState:
     """Generate SQL query using configurable system prompt"""
     logger = log.get(module="generic_sql", function="write_query")
@@ -173,21 +346,52 @@ def write_query(state: GenericSQLState, config: RunnableConfig, llm: LLM) -> Gen
         # Get configuration
         configurable = config.get("configurable", {})
         system_prompt = configurable.get("system_prompt", "Sen bir SQL uzmanısın.")
-        table_description = configurable.get("table_description", "Genel ERP tabloları")
         max_rows = configurable.get("max_result_rows", 100)
         
-        # Create enhanced system prompt with table description
+        # Get data from state
+        table_name = state.get("table_name", "")
+        table_columns = state.get("table_columns", [])
+        table_description = state.get("table_description", "")
+        column_distinct_values = state.get("column_distinct_values", {})
+        
+        # Build enhanced table info section with distinct values
+        table_info = ""
+        if table_name:
+            table_info = f"\n## ANA TABLO: {table_name}\n"
+            
+            if table_columns:
+                table_info += "\n### KOLONLAR VE MEVCUT DEĞERLER:\n"
+                for col in table_columns:
+                    name = col.get("name", "")
+                    col_type = col.get("type", "")
+                    desc = col.get("description", "")
+                    
+                    table_info += f"- **{name}** ({col_type}): {desc}\n"
+                    
+                    # Add distinct values if available
+                    if name in column_distinct_values and column_distinct_values[name]:
+                        values = column_distinct_values[name]
+                        if len(values) <= 10:
+                            values_str = ", ".join([f"'{v}'" for v in values])
+                            table_info += f"  📋 Mevcut değerler: {values_str}\n"
+                        else:
+                            sample_values = values[:8]
+                            values_str = ", ".join([f"'{v}'" for v in sample_values])
+                            table_info += f"  📋 Örnek değerler: {values_str} (ve {len(values)-8} tane daha)\n"
+                    table_info += "\n"
+            
+            if table_description and table_description != "Genel ERP tabloları":
+                table_info += f"### AÇIKLAMA:\n{table_description}\n"
+        
+        # Create enhanced system prompt with table info
         enhanced_prompt = f"""{system_prompt}
-
-## TABLO YAPISI VE AÇIKLAMASI:
-{table_description}
-
+{table_info}
 ## SQL KURALLARI:
 - Her zaman TOP {max_rows} kullan (LIMIT yerine)
 - Sadece SELECT sorguları kullan
 - MSSQL syntax'ını kullan
 - Güvenli ve optimize edilmiş sorgular yaz
-- Net tutarlar için uygun hesaplamaları yap
+- Ana tablo: {table_name if table_name else 'Belirtilmemiş'}
 
 Kullanıcı Sorusu: {{question}}
 
@@ -274,13 +478,30 @@ def fix_query(state: GenericSQLState, config: RunnableConfig, llm: LLM, db: SQLD
         return state
     
     try:
+        table_name = configurable.get("table_name", "")
+        table_columns = configurable.get("table_columns", [])
         table_description = configurable.get("table_description", "")
+        
+        # Build table info for fixing
+        table_info = ""
+        if table_name:
+            table_info = f"## ANA TABLO: {table_name}\n"
+            
+            if table_columns:
+                table_info += "\n### KOLONLAR:\n"
+                for col in table_columns:
+                    name = col.get("name", "")
+                    col_type = col.get("type", "")
+                    desc = col.get("description", "")
+                    table_info += f"- {name} ({col_type}): {desc}\n"
+            
+            if table_description:
+                table_info += f"\n### AÇIKLAMA:\n{table_description}\n"
         
         # Create fixing prompt
         fix_prompt = f"""Sen bir MSSQL uzmanısın. SQL hatasını düzelt.
 
-## TABLO YAPISI:
-{table_description}
+{table_info}
 
 ## HATA BİLGİSİ:
 Orjinal SQL: {state.get('query', '')}
@@ -393,9 +614,14 @@ def cleanup_database(state: GenericSQLState, config: RunnableConfig, db: SQLData
         
         # CRITICAL FIX: Ensure messages key exists for supervisor compatibility
         if "messages" not in state:
+            state["messages"] = []
+        
+        # Add AI message with the final answer
+        answer = state.get("answer", "Sonuç bulunamadı.")
+        if answer:
             from langchain.schema import AIMessage
-            answer = state.get("answer", "Sonuç bulunamadı.")
-            state["messages"] = [AIMessage(content=answer)]
+            ai_message = AIMessage(content=answer)
+            state["messages"].append(ai_message)
         
     except Exception as e:
         logger.error("Database cleanup failed", error=str(e))
@@ -565,8 +791,14 @@ class GenericSQLGraph(BaseGraph):
             graph_builder = StateGraph(GenericSQLState, config_schema=SQLAgentConfiguration)
             
             # Node wrapper functions with config injection
+            def initialize_node(state: GenericSQLState, *, config: RunnableConfig) -> GenericSQLState:
+                return initialize_state(state, config)
+            
             def setup_node(state: GenericSQLState, *, config: RunnableConfig) -> GenericSQLState:
                 return setup_database(state, config, self.db)
+            
+            def explore_data_node(state: GenericSQLState, *, config: RunnableConfig) -> GenericSQLState:
+                return explore_column_data(state, config, self.db)
             
             def write_query_node(state: GenericSQLState, *, config: RunnableConfig) -> GenericSQLState:
                 return write_query(state, config, self.llm)
@@ -584,16 +816,20 @@ class GenericSQLGraph(BaseGraph):
                 return cleanup_database(state, config, self.db)
             
             # Add nodes to graph
+            graph_builder.add_node("initialize", initialize_node)
             graph_builder.add_node("setup", setup_node)
+            graph_builder.add_node("explore_data", explore_data_node)
             graph_builder.add_node("write_query", write_query_node)
             graph_builder.add_node("execute_query", execute_query_node)
             graph_builder.add_node("fix_query", fix_query_node)
             graph_builder.add_node("generate_answer", generate_answer_node)
             graph_builder.add_node("cleanup", cleanup_node)
             
-            # Define graph flow
-            graph_builder.add_edge(START, "setup")
-            graph_builder.add_edge("setup", "write_query")
+            # Define enhanced graph flow
+            graph_builder.add_edge(START, "initialize")
+            graph_builder.add_edge("initialize", "setup")
+            graph_builder.add_edge("setup", "explore_data")
+            graph_builder.add_edge("explore_data", "write_query")
             graph_builder.add_edge("write_query", "execute_query")
             
             # Conditional routing after execution
