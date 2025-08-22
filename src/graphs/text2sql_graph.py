@@ -58,6 +58,7 @@ class Table(BaseModel):
     columns: List[str] = Field(default=[], description="Column definitions")
     relations: List[str] = Field(default=[], description="Table relations") 
     schema: Optional[str] = Field(default="", description="CREATE TABLE statement")
+    distinct_values: Optional[Dict[str, List[str]]] = Field(default_factory=dict, description="Distinct values per column")
 
 
 class SQLExecutionRouter:
