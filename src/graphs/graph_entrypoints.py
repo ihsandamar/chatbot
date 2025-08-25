@@ -1,7 +1,8 @@
+from src.graphs.enhanced_query_extraction_graph import EnhancedQueryExtractionGraph
 from src.graphs.generic_sql_graph import GenericSQLGraph
 from src.graphs.graph_repository import GraphRepository
-from src.graphs.master_report_graph import ERPSQLChatbot
 
+from src.graphs.query_extraction_graph import QueryExtractionGraph
 from src.graphs.text2sql_graph import Text2SQLGraph
 from src.models.models import LLM
 from src.graphs.chat_graph import ChatGraph
@@ -81,3 +82,11 @@ def gib_mevzuat():
 
 def forza_toolkit():
     return graph("forza_toolkit").build_graph()
+
+
+def query_extraction():
+    config = ConfigLoader.load_config("config/generic_sql_document_config.yaml") 
+    llm = LLM(model=config.llm.model, temperature=config.llm.temperature, api_key=config.llm.api_key)
+    db = SQLDatabase.from_uri(config.database.uri)
+    graph = EnhancedQueryExtractionGraph(llm=llm, db=db).build_graph()
+    return graph

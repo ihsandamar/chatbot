@@ -10,7 +10,8 @@
   ],
   "graphs": {
       "supervisor": "src/graphs/graph_entrypoints.py:supervisor_graph",
-      "generic_sql_graph":"src/graphs/graph_entrypoints.py:generic_sql_document_graph"
+      "generic_sql_graph":"src/graphs/graph_entrypoints.py:generic_sql_document_graph",
+      "query_extraction":"src/graphs/graph_entrypoints.py:query_extraction"
 
   },
   "env": "config/.env"
